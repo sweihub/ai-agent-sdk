@@ -15,6 +15,7 @@ mod agent_tests;
 pub mod query_engine;
 pub mod error;
 pub mod hooks;
+pub mod interact;
 pub mod http_client;
 pub mod mcp;
 pub mod message_queue_types;
