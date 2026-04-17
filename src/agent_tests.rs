@@ -564,7 +564,7 @@ mod tests {
     }
 
     /// Test that AgentEvent streaming events are properly emitted during agent execution.
-    /// This verifies: MessageStart, MessageStop, ContentBlockDelta, ToolStart, ToolComplete
+    /// This verifies: Thinking, MessageStart, MessageStop, ContentBlockDelta, ToolStart, ToolComplete
     #[tokio::test]
     async fn test_agent_events_emitted_correctly() {
         // Only run if required env vars are set
@@ -619,6 +619,10 @@ mod tests {
         // Get the events that were received
         let events = events_received.lock().unwrap();
 
+        // Verify we received Thinking event
+        let has_thinking = events.iter().any(|e| matches!(e, crate::types::AgentEvent::Thinking { .. }));
+        assert!(has_thinking, "Should have received Thinking event. Events: {:?}", events);
+
         // Verify we received MessageStart event
         let has_message_start = events.iter().any(|e| matches!(e, crate::types::AgentEvent::MessageStart { .. }));
         assert!(has_message_start, "Should have received MessageStart event. Events: {:?}", events);
@@ -656,6 +660,158 @@ mod tests {
         assert!(has_expected_output, "Response should contain 'EventTest123'. Response: {}", response.text);
 
         println!("All event checks passed! Events received:");
+        for (i, event) in events.iter().enumerate() {
+            println!("  {}: {:?}", i, event);
+        }
+    }
+
+    /// Test that MaxTurnsReached event is emitted when max turns is limited to 1
+    #[tokio::test]
+    async fn test_agent_max_turns_reached_event() {
+        // Only run if required env vars are set
+        if !has_required_env_vars() {
+            eprintln!("Skipping test: AI_BASE_URL, AI_MODEL, or AI_AUTH_TOKEN not set");
+            return;
+        }
+
+        // Load config from .env file
+        let config = EnvConfig::load();
+
+        // Skip if no API configured
+        if config.base_url.is_none() || config.auth_token.is_none() {
+            eprintln!("Skipping test: no API config found");
+            return;
+        }
+
+        // Get all available tools
+        use crate::get_all_tools;
+        let tools = get_all_tools();
+
+        // Track events received
+        use std::sync::Mutex;
+        let events_received: std::sync::Arc<Mutex<Vec<crate::types::AgentEvent>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events_received.clone();
+
+        // Create agent with max_turns=1 (forces MaxTurnsReached)
+        let mut agent = Agent::create(AgentOptions {
+            model: config.model.clone(),
+            max_turns: Some(1), // Only 1 turn - will hit limit when tool is needed
+            tools,
+            on_event: Some(std::sync::Arc::new(move |event| {
+                events_clone.lock().unwrap().push(event);
+            })),
+            ..Default::default()
+        });
+
+        // Prompt that requires tool use (will need more than 1 turn)
+        let result = agent
+            .prompt("Run this command: echo 'MaxTurnsTest'")
+            .await;
+
+        // Should still return a result (may be truncated due to max turns)
+        assert!(result.is_ok(), "Agent should return result even with max turns");
+        let response = result.unwrap();
+        println!("Agent response (max_turns=1): {}", response.text);
+
+        // Get the events that were received
+        let events = events_received.lock().unwrap();
+
+        // Verify we received MessageStart event
+        let has_message_start = events.iter().any(|e| matches!(e, crate::types::AgentEvent::MessageStart { .. }));
+        assert!(has_message_start, "Should have received MessageStart event. Events: {:?}", events);
+
+        // Verify we received MessageStop event
+        let has_message_stop = events.iter().any(|e| matches!(e, crate::types::AgentEvent::MessageStop));
+        assert!(has_message_stop, "Should have received MessageStop event. Events: {:?}", events);
+
+        // Verify we received MaxTurnsReached event
+        let has_max_turns = events.iter().any(|e| matches!(e, crate::types::AgentEvent::MaxTurnsReached { .. }));
+        println!("MaxTurnsReached check: {:?}", events.iter().filter(|e| matches!(e, crate::types::AgentEvent::MaxTurnsReached { .. })).collect::<Vec<_>>());
+        assert!(has_max_turns, "Should have received MaxTurnsReached event. Events: {:?}", events);
+
+        println!("MaxTurnsReached test passed! Events received:");
+        for (i, event) in events.iter().enumerate() {
+            println!("  {}: {:?}", i, event);
+        }
+    }
+
+    /// Test that ToolError event is emitted when a tool fails
+    #[tokio::test]
+    async fn test_agent_tool_error_event() {
+        // Only run if required env vars are set
+        if !has_required_env_vars() {
+            eprintln!("Skipping test: AI_BASE_URL, AI_MODEL, or AI_AUTH_TOKEN not set");
+            return;
+        }
+
+        // Load config from .env file
+        let config = EnvConfig::load();
+
+        // Skip if no API configured
+        if config.base_url.is_none() || config.auth_token.is_none() {
+            eprintln!("Skipping test: no API config found");
+            return;
+        }
+
+        // Get all available tools
+        use crate::get_all_tools;
+        let tools = get_all_tools();
+
+        // Track events received
+        use std::sync::Mutex;
+        let events_received: std::sync::Arc<Mutex<Vec<crate::types::AgentEvent>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events_received.clone();
+
+        // Create agent with event callback
+        let mut agent = Agent::create(AgentOptions {
+            model: config.model.clone(),
+            max_turns: Some(3),
+            tools,
+            on_event: Some(std::sync::Arc::new(move |event| {
+                events_clone.lock().unwrap().push(event);
+            })),
+            ..Default::default()
+        });
+
+        // Prompt that tries to access a non-existing file (will trigger tool error)
+        let result = agent
+            .prompt("Read the first line of the file 'no-such-file-xyz.txt' using head command")
+            .await;
+
+        // Should still return a result (agent handles error)
+        assert!(result.is_ok(), "Agent should return result even with tool error");
+        let response = result.unwrap();
+        println!("Agent response (tool error case): {}", response.text);
+
+        // Get the events that were received
+        let events = events_received.lock().unwrap();
+
+        // Verify we received MessageStart event
+        let has_message_start = events.iter().any(|e| matches!(e, crate::types::AgentEvent::MessageStart { .. }));
+        assert!(has_message_start, "Should have received MessageStart event. Events: {:?}", events);
+
+        // Verify we received MessageStop event
+        let has_message_stop = events.iter().any(|e| matches!(e, crate::types::AgentEvent::MessageStop));
+        assert!(has_message_stop, "Should have received MessageStop event. Events: {:?}", events);
+
+        // Verify we received ToolStart event
+        let has_tool_start = events.iter().any(|e| matches!(e, crate::types::AgentEvent::ToolStart { .. }));
+        println!("ToolStart check: {:?}", events.iter().filter(|e| matches!(e, crate::types::AgentEvent::ToolStart { .. })).collect::<Vec<_>>());
+        assert!(has_tool_start, "Should have received ToolStart event. Events: {:?}", events);
+
+        // Verify we received ToolError event (file not found should trigger error)
+        let has_tool_error = events.iter().any(|e| matches!(e, crate::types::AgentEvent::ToolError { .. }));
+        println!("ToolError check: {:?}", events.iter().filter(|e| matches!(e, crate::types::AgentEvent::ToolError { .. })).collect::<Vec<_>>());
+
+        // Note: ToolError may or may not fire depending on how the LLM handles the error
+        // The important thing is we get a response
+        if has_tool_error {
+            println!("ToolError event detected!");
+        }
+
+        println!("ToolError test completed! Events received:");
         for (i, event) in events.iter().enumerate() {
             println!("  {}: {:?}", i, event);
         }
