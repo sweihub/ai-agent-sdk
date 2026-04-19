@@ -66,6 +66,7 @@ impl BashTool {
             tool_use_id: "".to_string(),
             content,
             is_error: Some(is_error),
+            was_persisted: None,
         })
     }
 }

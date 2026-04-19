@@ -857,6 +857,7 @@ impl Agent {
                             tool_use_id: "agent_tool".to_string(),
                             content,
                             is_error: Some(false),
+                was_persisted: None,
                         })
                     }
                     Err(e) => Ok(ToolResult {
@@ -864,6 +865,7 @@ impl Agent {
                         tool_use_id: "agent_tool".to_string(),
                         content: format!("[Subagent: {}] Error: {}", description, e),
                         is_error: Some(true),
+                was_persisted: None,
                     }),
                 }
             })
@@ -1076,6 +1078,7 @@ impl Agent {
                             tool_use_id: "agent_tool".to_string(),
                             content,
                             is_error: Some(false),
+                was_persisted: None,
                         })
                     }
                     Err(e) => Ok(ToolResult {
@@ -1083,6 +1086,7 @@ impl Agent {
                         tool_use_id: "agent_tool".to_string(),
                         content: format!("[Subagent: {}] Error: {}", description, e),
                         is_error: Some(true),
+                was_persisted: None,
                     }),
                 }
             })

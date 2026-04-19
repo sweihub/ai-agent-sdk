@@ -45,9 +45,7 @@ fn compactable_tools() -> HashSet<&'static str> {
 /// Evaluate whether the time-based trigger should fire.
 /// Returns the measured gap (minutes since last assistant message) when the
 /// trigger fires, or None when it doesn't.
-pub fn evaluate_time_based_trigger(
-    messages: &[Message],
-) -> Option<TimeBasedTriggerResult> {
+pub fn evaluate_time_based_trigger(messages: &[Message]) -> Option<TimeBasedTriggerResult> {
     let config = crate::services::compact::time_based_mc_config::get_time_based_mc_config();
 
     if !config.enabled {
@@ -58,12 +56,7 @@ pub fn evaluate_time_based_trigger(
     let last_assistant = messages
         .iter()
         .rev()
-        .find(|m| {
-            matches!(
-                m.role,
-                crate::types::MessageRole::Assistant
-            )
-        });
+        .find(|m| matches!(m.role, crate::types::MessageRole::Assistant));
 
     let Some(last_msg) = last_assistant else {
         return None;
@@ -144,8 +137,7 @@ pub fn maybe_time_based_microcompact(messages: &mut [Message]) -> Option<TimeBas
         // Tool results have content that can be cleared
         if let crate::types::MessageRole::Tool = msg.role {
             if let Some(tool_call_id) = &msg.tool_call_id {
-                if clear_set.contains(tool_call_id)
-                    && msg.content != TIME_BASED_MC_CLEARED_MESSAGE
+                if clear_set.contains(tool_call_id) && msg.content != TIME_BASED_MC_CLEARED_MESSAGE
                 {
                     tokens_saved += crate::compact::rough_token_count_estimation(&msg.content, 4.0);
                     msg.content = TIME_BASED_MC_CLEARED_MESSAGE.to_string();
@@ -257,10 +249,7 @@ pub fn microcompact_messages(messages: &mut [Message]) {
     for msg in messages.iter_mut() {
         if let crate::types::MessageRole::Tool = &msg.role {
             if msg.content.len() > 16_000 {
-                let tool_name = msg
-                    .tool_call_id
-                    .as_deref()
-                    .unwrap_or("Tool");
+                let tool_name = msg.tool_call_id.as_deref().unwrap_or("Tool");
                 msg.content = truncate_tool_result_content(&msg.content, tool_name);
             }
         }
@@ -322,6 +311,7 @@ mod tests {
                 content: String::new(),
                 tool_calls: Some(vec![crate::types::ToolCall {
                     id: "call_1".to_string(),
+                    r#type: "function".to_string(),
                     name: FILE_READ_TOOL_NAME.to_string(),
                     arguments: serde_json::json!({}),
                 }]),
@@ -332,6 +322,7 @@ mod tests {
                 content: String::new(),
                 tool_calls: Some(vec![crate::types::ToolCall {
                     id: "call_2".to_string(),
+                    r#type: "function".to_string(),
                     name: "SomeOtherTool".to_string(),
                     arguments: serde_json::json!({}),
                 }]),

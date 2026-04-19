@@ -135,6 +135,7 @@ impl TaskCreateTool {
                 id
             ),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }
@@ -188,6 +189,7 @@ impl TaskListTool {
                 tool_use_id: "".to_string(),
                 content: "No tasks.".to_string(),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -218,6 +220,7 @@ impl TaskListTool {
             tool_use_id: "".to_string(),
             content: format!("Tasks:\n{}", lines.join("\n")),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }
@@ -354,6 +357,7 @@ impl TaskUpdateTool {
             tool_use_id: "".to_string(),
             content: format!("Task {} updated: {}", task_id, changes_str),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }
@@ -424,6 +428,7 @@ impl TaskGetTool {
             tool_use_id: "".to_string(),
             content,
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }

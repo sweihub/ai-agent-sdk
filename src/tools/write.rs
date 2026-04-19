@@ -60,6 +60,7 @@ impl FileWriteTool {
             tool_use_id: "".to_string(),
             content: format!("Successfully wrote to {}", path.display()),
             is_error: None,
+            was_persisted: None,
         })
     }
 }

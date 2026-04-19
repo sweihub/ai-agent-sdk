@@ -69,6 +69,7 @@ impl WebSearchTool {
                 tool_use_id: "".to_string(),
                 content: format!("Search failed: HTTP {}", response.status().as_u16()),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -127,6 +128,7 @@ impl WebSearchTool {
             tool_use_id: "".to_string(),
             content,
             is_error: None,
+            was_persisted: None,
         })
     }
 }

@@ -29,6 +29,7 @@ pub mod tempfile;
 pub mod theme;
 pub mod thinking;
 pub mod ultraplan;
+pub mod tool_errors;
 pub mod user;
 pub mod uuid;
 pub mod which;

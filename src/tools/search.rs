@@ -168,6 +168,7 @@ impl ToolSearchTool {
             tool_use_id: "".to_string(),
             content: serde_json::to_string(&content_value).unwrap_or_default(),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 

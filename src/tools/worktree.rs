@@ -113,6 +113,7 @@ impl EnterWorktreeTool {
             tool_use_id: "enter_worktree".to_string(),
             content: response,
             is_error: Some(false),
+                was_persisted: None,
         })
     }
 }
@@ -178,6 +179,7 @@ impl ExitWorktreeTool {
                 tool_use_id: "".to_string(),
                 content: "Error: Not currently in a worktree.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -231,6 +233,7 @@ impl ExitWorktreeTool {
                     tool_use_id: "".to_string(),
                     content: "Error: action must be 'keep' or 'remove'".to_string(),
                     is_error: Some(true),
+                was_persisted: None,
                 });
             }
         };
@@ -246,6 +249,7 @@ impl ExitWorktreeTool {
             tool_use_id: "exit_worktree".to_string(),
             content: response,
             is_error: Some(false),
+                was_persisted: None,
         })
     }
 }

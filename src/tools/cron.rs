@@ -146,6 +146,7 @@ impl CronCreateTool {
                 tool_use_id: "".to_string(),
                 content: "Error: Maximum number of scheduled jobs (50) reached. Delete some jobs first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
         drop(guard);
@@ -199,6 +200,7 @@ impl CronCreateTool {
                 job_count
             ),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }
@@ -267,6 +269,7 @@ impl CronDeleteTool {
                 id, job.cron, job.prompt
             ),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }
@@ -314,6 +317,7 @@ impl CronListTool {
                 tool_use_id: "".to_string(),
                 content: "No scheduled tasks.".to_string(),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -334,6 +338,7 @@ impl CronListTool {
             tool_use_id: "".to_string(),
             content: format!("Scheduled tasks:\n\n{}", lines.join("\n\n")),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }

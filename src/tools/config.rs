@@ -96,6 +96,7 @@ impl ConfigTool {
                         tool_use_id: "".to_string(),
                         content: "Error: key is required for 'get' action".to_string(),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
                 let guard = get_config_map().lock().unwrap();
@@ -105,6 +106,7 @@ impl ConfigTool {
                         tool_use_id: "".to_string(),
                         content: format!("Config '{}': {}", key, val),
                         is_error: Some(false),
+                was_persisted: None,
                     })
                 } else {
                     Ok(ToolResult {
@@ -112,6 +114,7 @@ impl ConfigTool {
                         tool_use_id: "".to_string(),
                         content: format!("Config '{}' is not set", key),
                         is_error: None,
+                was_persisted: None,
                     })
                 }
             }
@@ -122,6 +125,7 @@ impl ConfigTool {
                         tool_use_id: "".to_string(),
                         content: "Error: key is required for 'set' action".to_string(),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
                 if value_str.is_empty() {
@@ -130,6 +134,7 @@ impl ConfigTool {
                         tool_use_id: "".to_string(),
                         content: "Error: value is required for 'set' action".to_string(),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
                 // Parse value as JSON if possible, otherwise treat as string
@@ -145,6 +150,7 @@ impl ConfigTool {
                     tool_use_id: "".to_string(),
                     content: format!("Config '{}' has been updated", key),
                     is_error: Some(false),
+                was_persisted: None,
                 })
             }
             "list" => {
@@ -155,6 +161,7 @@ impl ConfigTool {
                         tool_use_id: "".to_string(),
                         content: "No configuration settings set.".to_string(),
                         is_error: None,
+                was_persisted: None,
                     })
                 } else {
                     let items: Vec<String> = guard
@@ -166,6 +173,7 @@ impl ConfigTool {
                         tool_use_id: "".to_string(),
                         content: format!("Configuration settings:\n{}", items.join("\n")),
                         is_error: Some(false),
+                was_persisted: None,
                     })
                 }
             }
@@ -174,6 +182,7 @@ impl ConfigTool {
                 tool_use_id: "".to_string(),
                 content: format!("Invalid action: '{}'. Must be 'get', 'set', or 'list'.", action),
                 is_error: Some(true),
+                was_persisted: None,
             }),
         }
     }

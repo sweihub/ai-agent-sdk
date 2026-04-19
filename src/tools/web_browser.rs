@@ -154,6 +154,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: format!("Unknown action: {}", action),
                 is_error: Some(true),
+                was_persisted: None,
             }),
         }
     }
@@ -173,6 +174,7 @@ impl WebBrowserTool {
                     tool_use_id: "".to_string(),
                     content: "Browser is already running.".to_string(),
                     is_error: None,
+                was_persisted: None,
                 });
             }
         }
@@ -198,6 +200,7 @@ impl WebBrowserTool {
                 chrome_path
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -214,6 +217,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running.".to_string(),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -227,6 +231,7 @@ impl WebBrowserTool {
             tool_use_id: "".to_string(),
             content: "Headless browser stopped.".to_string(),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -247,6 +252,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -274,6 +280,7 @@ impl WebBrowserTool {
                         tab_title, tab_id, url, url
                     ),
                     is_error: None,
+                was_persisted: None,
                 })
             }
             None if !has_tabs => {
@@ -289,6 +296,7 @@ impl WebBrowserTool {
                         if has_tabs { "some" } else { "no" }
                     ),
                     is_error: Some(true),
+                was_persisted: None,
                 })
             }
         }
@@ -322,6 +330,7 @@ impl WebBrowserTool {
                 tab_id, url
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -338,6 +347,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -392,6 +402,7 @@ impl WebBrowserTool {
                 screenshot_path
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -412,6 +423,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -442,6 +454,7 @@ impl WebBrowserTool {
                 script
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -458,6 +471,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -481,6 +495,7 @@ impl WebBrowserTool {
                 filter_note
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -497,6 +512,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -506,6 +522,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "No tabs open. Use create_tab or navigate to open a page.".to_string(),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -527,6 +544,7 @@ impl WebBrowserTool {
                 tabs_info.join("\n")
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -545,6 +563,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -579,6 +598,7 @@ impl WebBrowserTool {
                 tab_id, url_note
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -597,6 +617,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -614,6 +635,7 @@ impl WebBrowserTool {
                         tool_use_id: "".to_string(),
                         content: format!("Tab '{}' not found.", id),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
             }
@@ -631,6 +653,7 @@ impl WebBrowserTool {
                         tool_use_id: "".to_string(),
                         content: "No active tab to close.".to_string(),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
             }
@@ -650,6 +673,7 @@ impl WebBrowserTool {
             tool_use_id: "".to_string(),
             content: format!("Closed tab '{}' (id: {}).", removed_title, removed_id),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -670,6 +694,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -698,6 +723,7 @@ impl WebBrowserTool {
                 tab_url
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -722,6 +748,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -750,6 +777,7 @@ impl WebBrowserTool {
                 tab_url
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -770,6 +798,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -797,6 +826,7 @@ impl WebBrowserTool {
                 tab_url
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -816,6 +846,7 @@ impl WebBrowserTool {
                 tool_use_id: "".to_string(),
                 content: "Browser is not running. Use start_browser first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -848,6 +879,7 @@ impl WebBrowserTool {
                 tab_url
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 

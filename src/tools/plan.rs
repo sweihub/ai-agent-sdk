@@ -110,6 +110,7 @@ impl EnterPlanModeTool {
             tool_use_id: "enter_plan_mode".to_string(),
             content: response,
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }
@@ -155,6 +156,7 @@ impl ExitPlanModeTool {
                 tool_use_id: "".to_string(),
                 content: "Error: Not currently in plan mode. Use EnterPlanMode first.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -181,6 +183,7 @@ impl ExitPlanModeTool {
             tool_use_id: "exit_plan_mode".to_string(),
             content: response,
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }

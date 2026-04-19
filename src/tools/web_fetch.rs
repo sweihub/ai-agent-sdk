@@ -140,6 +140,7 @@ impl WebFetchTool {
                     redirect_note
                 ),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -176,6 +177,7 @@ impl WebFetchTool {
                     redirect_note
                 ),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -222,6 +224,7 @@ impl WebFetchTool {
             tool_use_id: "".to_string(),
             content: format!("{}{}", text, redirect_note),
             is_error: None,
+            was_persisted: None,
         })
     }
 

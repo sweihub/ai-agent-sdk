@@ -138,6 +138,7 @@ impl TodoWriteTool {
             tool_use_id: "todo_write".to_string(),
             content: format!("{}{}", base, nudge),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }

@@ -95,6 +95,7 @@ impl LSPTool {
                 tool_use_id: "".to_string(),
                 content: format!("File not found: {}", absolute_path.display()),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -109,6 +110,7 @@ impl LSPTool {
                         metadata.len()
                     ),
                     is_error: None,
+                was_persisted: None,
                 });
             }
         }
@@ -123,6 +125,7 @@ impl LSPTool {
                     absolute_path.display()
                 ),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -157,6 +160,7 @@ impl LSPTool {
                 operation, lsp_method, absolute_path.display(), line, character
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 }

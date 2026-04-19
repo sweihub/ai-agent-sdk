@@ -18,9 +18,14 @@ use crate::services::streaming::{
 };
 use crate::tools::orchestration::{self, ToolMessageUpdate};
 use crate::types::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Return an empty JSON object value to use as default for tool call arguments
+fn empty_json_value() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
 
 /// Strip thinking tags from content (remove "<think>" and "</think>" blocks)
 /// Matches TypeScript's thinking removal logic
@@ -1496,9 +1501,10 @@ impl QueryEngine {
                 let arguments = tc
                     .get("arguments")
                     .cloned()
-                    .unwrap_or(serde_json::Value::Null);
+                    .unwrap_or_else(|| empty_json_value());
                 tool_call_structs.push(crate::types::ToolCall {
                     id,
+                    r#type: "function".to_string(),
                     name,
                     arguments,
                 });
@@ -1623,6 +1629,8 @@ impl QueryEngine {
                 self.config.tools.clone(),
                 tool_context,
                 executor,
+                Some(self.config.cwd.clone()),
+                None,
             )
             .await;
 
@@ -1989,7 +1997,7 @@ fn extract_tool_calls(response: &serde_json::Value) -> Vec<serde_json::Value> {
                                 let name = func
                                     .and_then(|f| f.get("name"))
                                     .cloned()
-                                    .unwrap_or(serde_json::Value::Null);
+                                    .unwrap_or_else(|| empty_json_value());
                                 // Handle arguments - could be string or object
                                 let args = func.and_then(|f| f.get("arguments"));
                                 let arguments = if let Some(args_val) = args {
@@ -2214,7 +2222,7 @@ async fn make_nonstreaming_request(
                     let tool_input = block
                         .get("input")
                         .cloned()
-                        .unwrap_or(serde_json::Value::Null);
+                        .unwrap_or_else(|| empty_json_value());
 
                     result.tool_calls.push(serde_json::json!({
                         "id": tool_id,
@@ -2251,9 +2259,9 @@ async fn make_nonstreaming_request(
                             .unwrap_or("");
                         let args = func.and_then(|f| f.get("arguments"));
                         let args_val = if let Some(args_str) = args.and_then(|a| a.as_str()) {
-                            serde_json::from_str(args_str).unwrap_or(serde_json::Value::Null)
+                            serde_json::from_str(args_str).unwrap_or_else(|_| empty_json_value())
                         } else {
-                            args.cloned().unwrap_or(serde_json::Value::Null)
+                            args.cloned().unwrap_or_else(|| empty_json_value())
                         };
                         result.tool_calls.push(serde_json::json!({
                             "id": id,
@@ -2456,6 +2464,9 @@ async fn make_anthropic_streaming_request(
 
     let mut result = StreamingResult::default();
     let mut current_tool_use: Option<(String, String, String)> = None; // (id, name, args_str)
+    // OpenAI tool_calls accumulator: index -> (id, name, accumulated args)
+    let mut openai_tool_calls: HashMap<u32, (String, String, String)> = HashMap::new();
+    let mut openai_tool_finalized: HashSet<u32> = HashSet::new();
     let mut content_index: u32 = 0;
     let mut tool_use_index: u32 = 0;
     let mut thinking_index: u32 = 0;
@@ -2544,7 +2555,7 @@ async fn make_anthropic_streaming_request(
                                         let tool_input = block
                                             .get("input")
                                             .cloned()
-                                            .unwrap_or(serde_json::Value::Null);
+                                            .unwrap_or_else(|| empty_json_value());
                                         result.tool_calls.push(serde_json::json!({
                                             "id": tool_id,
                                             "name": tool_name,
@@ -2634,6 +2645,7 @@ async fn make_anthropic_streaming_request(
                                     delta.get("tool_calls").and_then(|t| t.as_array())
                                 {
                                     for tc in tool_calls {
+                                        let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
                                         let id =
                                             tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
                                         let func = tc.get("function");
@@ -2641,19 +2653,24 @@ async fn make_anthropic_streaming_request(
                                             .and_then(|f| f.get("name"))
                                             .and_then(|n| n.as_str())
                                             .unwrap_or("");
-                                        let args = func.and_then(|f| f.get("arguments"));
-                                        let args_val =
-                                            if let Some(args_str) = args.and_then(|a| a.as_str()) {
-                                                serde_json::from_str(args_str)
-                                                    .unwrap_or(serde_json::Value::Null)
-                                            } else {
-                                                args.cloned().unwrap_or(serde_json::Value::Null)
-                                            };
-                                        result.tool_calls.push(serde_json::json!({
-                                            "id": id,
-                                            "name": name,
-                                            "arguments": args_val,
-                                        }));
+                                        let args_str = func
+                                            .and_then(|f| f.get("arguments"))
+                                            .and_then(|a| a.as_str())
+                                            .unwrap_or("");
+
+                                        // Accumulate args into openai_tool_calls map
+                                        if !openai_tool_finalized.contains(&idx) {
+                                            let entry = openai_tool_calls
+                                                .entry(idx)
+                                                .or_insert_with(|| (id.to_string(), name.to_string(), String::new()));
+                                            if entry.0.is_empty() && !id.is_empty() {
+                                                entry.0 = id.to_string();
+                                            }
+                                            if entry.1.is_empty() && !name.is_empty() {
+                                                entry.1 = name.to_string();
+                                            }
+                                            entry.2.push_str(args_str);
+                                        }
                                     }
                                 }
                             }
@@ -2663,9 +2680,25 @@ async fn make_anthropic_streaming_request(
                             {
                                 if !finish_reason.is_empty()
                                     && finish_reason != "null"
-                                    && (!result.content.is_empty() || !result.tool_calls.is_empty())
+                                    && (!result.content.is_empty() || !result.tool_calls.is_empty() || !openai_tool_calls.is_empty())
                                 {
                                     result.stop_reason = Some(finish_reason.to_string());
+
+                                    // Finalize accumulated OpenAI tool calls
+                                    for (idx, (id, name, args)) in &openai_tool_calls {
+                                        if !openai_tool_finalized.contains(idx) {
+                                            let args_val: serde_json::Value =
+                                                serde_json::from_str(args)
+                                                    .unwrap_or_else(|_| empty_json_value());
+                                            result.tool_calls.push(serde_json::json!({
+                                                "id": id,
+                                                "name": name,
+                                                "arguments": args_val,
+                                            }));
+                                        }
+                                    }
+                                    openai_tool_finalized.extend(openai_tool_calls.keys().copied());
+
                                     if let Some(ref cb) = on_event {
                                         cb(AgentEvent::ContentBlockStop { index: 0 });
                                         cb(AgentEvent::MessageStop);
@@ -2707,9 +2740,9 @@ async fn make_anthropic_streaming_request(
                                                 args.and_then(|a| a.as_str())
                                             {
                                                 serde_json::from_str(args_str)
-                                                    .unwrap_or(serde_json::Value::Null)
+                                                    .unwrap_or_else(|_| empty_json_value())
                                             } else {
-                                                args.cloned().unwrap_or(serde_json::Value::Null)
+                                                args.cloned().unwrap_or_else(|| empty_json_value())
                                             };
                                             result.tool_calls.push(serde_json::json!({
                                                 "id": id,
@@ -2939,7 +2972,7 @@ async fn make_anthropic_streaming_request(
                                         {
                                             let args: serde_json::Value =
                                                 serde_json::from_str(&args_str)
-                                                    .unwrap_or(serde_json::Value::Null);
+                                                    .unwrap_or_else(|_| empty_json_value());
 
                                             result.tool_calls.push(serde_json::json!({
                                                 "id": id,
@@ -3040,6 +3073,7 @@ async fn make_anthropic_streaming_request(
                                             }
                                         }
                                         for tc in tool_calls {
+                                            let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
                                             let id =
                                                 tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
                                             let func = tc.get("function");
@@ -3047,20 +3081,25 @@ async fn make_anthropic_streaming_request(
                                                 .and_then(|f| f.get("name"))
                                                 .and_then(|n| n.as_str())
                                                 .unwrap_or("");
-                                            let args = func.and_then(|f| f.get("arguments"));
-                                            let args_val = if let Some(args_str) =
-                                                args.and_then(|a| a.as_str())
-                                            {
-                                                serde_json::from_str(args_str)
-                                                    .unwrap_or(serde_json::Value::Null)
-                                            } else {
-                                                args.cloned().unwrap_or(serde_json::Value::Null)
-                                            };
-                                            result.tool_calls.push(serde_json::json!({
-                                                "id": id,
-                                                "name": name,
-                                                "arguments": args_val,
-                                            }));
+                                            let args_str = func
+                                                .and_then(|f| f.get("arguments"))
+                                                .and_then(|a| a.as_str())
+                                                .unwrap_or("");
+
+                                            // Accumulate args into openai_tool_calls map
+                                            if !openai_tool_finalized.contains(&idx) {
+                                                let entry = openai_tool_calls
+                                                    .entry(idx)
+                                                    .or_insert_with(|| (id.to_string(), name.to_string(), String::new()));
+                                                // Update id/name on first chunk for this index
+                                                if entry.0.is_empty() && !id.is_empty() {
+                                                    entry.0 = id.to_string();
+                                                }
+                                                if entry.1.is_empty() && !name.is_empty() {
+                                                    entry.1 = name.to_string();
+                                                }
+                                                entry.2.push_str(args_str);
+                                            }
                                         }
                                     }
                                 }
@@ -3079,6 +3118,22 @@ async fn make_anthropic_streaming_request(
                                         result.content_blocks_completed += 1;
                                         result.cost =
                                             calculate_streaming_cost(&result.usage, &model);
+
+                                        // Finalize accumulated OpenAI tool calls
+                                        for (idx, (id, name, args)) in &openai_tool_calls {
+                                            if !openai_tool_finalized.contains(idx) {
+                                                let args_val: serde_json::Value =
+                                                    serde_json::from_str(args)
+                                                        .unwrap_or_else(|_| empty_json_value());
+                                                result.tool_calls.push(serde_json::json!({
+                                                    "id": id,
+                                                    "name": name,
+                                                    "arguments": args_val,
+                                                }));
+                                            }
+                                        }
+                                        openai_tool_finalized.extend(openai_tool_calls.keys().copied());
+
                                         return Ok(result);
                                     }
                                 }
@@ -3113,7 +3168,7 @@ async fn make_anthropic_streaming_request(
                                             let tool_input = block
                                                 .get("input")
                                                 .cloned()
-                                                .unwrap_or(serde_json::Value::Null);
+                                                .unwrap_or_else(|| empty_json_value());
 
                                             result.tool_calls.push(serde_json::json!({
                                                 "id": tool_id,
@@ -3338,9 +3393,9 @@ mod tests {
                                 .unwrap_or("");
                             let args = func.and_then(|f| f.get("arguments"));
                             let args_val = if let Some(args_str) = args.and_then(|a| a.as_str()) {
-                                serde_json::from_str(args_str).unwrap_or(serde_json::Value::Null)
+                                serde_json::from_str(args_str).unwrap_or_else(|_| empty_json_value())
                             } else {
-                                args.cloned().unwrap_or(serde_json::Value::Null)
+                                args.cloned().unwrap_or_else(|| empty_json_value())
                             };
                             tool_calls.push(serde_json::json!({
                                 "id": id,
@@ -3449,11 +3504,13 @@ mod tests {
         let tool_calls = vec![
             ToolCall {
                 id: "call_abc123".to_string(),
+                r#type: "function".to_string(),
                 name: "Bash".to_string(),
                 arguments: serde_json::json!({"command": "ls -la"}),
             },
             ToolCall {
                 id: "call_def456".to_string(),
+                r#type: "function".to_string(),
                 name: "Read".to_string(),
                 arguments: serde_json::json!({"path": "/tmp/test.txt"}),
             },
@@ -3669,6 +3726,7 @@ mod tests {
         // Test that tool call arguments can be serialized/deserialized as JSON
         let tc = ToolCall {
             id: "call_test".to_string(),
+            r#type: "function".to_string(),
             name: "Bash".to_string(),
             arguments: serde_json::json!({
                 "command": "echo hello"
@@ -3785,6 +3843,7 @@ mod tests {
             content: "".to_string(),
             tool_calls: Some(vec![ToolCall {
                 id: "call_123".to_string(),
+                r#type: "function".to_string(),
                 name: "Bash".to_string(),
                 arguments: serde_json::json!({"command": "ls /tmp"}),
             }]),

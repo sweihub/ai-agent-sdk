@@ -90,6 +90,7 @@ impl NotebookEditTool {
                 tool_use_id: "".to_string(),
                 content: "Error: Edit mode must be replace, insert, or delete.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -100,6 +101,7 @@ impl NotebookEditTool {
                 tool_use_id: "".to_string(),
                 content: "Error: Cell type is required when using edit_mode=insert.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -117,6 +119,7 @@ impl NotebookEditTool {
                 tool_use_id: "".to_string(),
                 content: "Error: File must be a Jupyter notebook (.ipynb file). For editing other file types, use the FileEdit tool.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -127,6 +130,7 @@ impl NotebookEditTool {
                 tool_use_id: "".to_string(),
                 content: "Error: Notebook file does not exist.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -144,6 +148,7 @@ impl NotebookEditTool {
                         tool_use_id: "".to_string(),
                         content: "Error: Notebook is not valid JSON.".to_string(),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
             };
@@ -171,6 +176,7 @@ impl NotebookEditTool {
                     tool_use_id: "".to_string(),
                     content: "Error: Cell ID must be specified when not inserting a new cell.".to_string(),
                     is_error: Some(true),
+                was_persisted: None,
                 });
             }
             0 // Default to inserting at the beginning
@@ -189,6 +195,7 @@ impl NotebookEditTool {
                             tool_use_id: "".to_string(),
                             content: format!("Error: Cell with index {} does not exist in notebook.", parsed),
                             is_error: Some(true),
+                was_persisted: None,
                         });
                     }
                     parsed
@@ -198,6 +205,7 @@ impl NotebookEditTool {
                         tool_use_id: "".to_string(),
                         content: format!("Error: Cell with ID \"{}\" not found in notebook.", cid),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
             }
@@ -251,6 +259,7 @@ impl NotebookEditTool {
                         tool_use_id: "".to_string(),
                         content: format!("Error: Cell index {} out of bounds", actual_cell_index),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
                 cells.remove(actual_cell_index);
@@ -280,6 +289,7 @@ impl NotebookEditTool {
                         tool_use_id: "".to_string(),
                         content: format!("Error: Cell index {} out of bounds", actual_cell_index),
                         is_error: Some(true),
+                was_persisted: None,
                     });
                 }
                 let target_cell = &mut cells[actual_cell_index];
@@ -313,6 +323,7 @@ impl NotebookEditTool {
                     tool_use_id: "".to_string(),
                     content: format!("Error: Unknown edit mode: {}", actual_edit_mode),
                     is_error: Some(true),
+                was_persisted: None,
                 });
             }
         }
@@ -342,6 +353,7 @@ impl NotebookEditTool {
             tool_use_id: "".to_string(),
             content: message,
             is_error: None,
+            was_persisted: None,
         })
     }
 }

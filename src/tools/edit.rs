@@ -76,6 +76,7 @@ impl FileEditTool {
                 tool_use_id: "".to_string(),
                 content: "Error: old_string and new_string are identical".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -96,6 +97,7 @@ impl FileEditTool {
                 tool_use_id: "".to_string(),
                 content: format!("Error: old_string not found in {}. Make sure it matches exactly including whitespace.", file_path.display()),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -110,6 +112,7 @@ impl FileEditTool {
                     tool_use_id: "".to_string(),
                     content: format!("Error: old_string appears {} times in the file. Provide more context to make it unique, or set replace_all: true.", count),
                     is_error: Some(true),
+                was_persisted: None,
                 });
             }
             content.replacen(old_string, new_string, 1)
@@ -122,6 +125,7 @@ impl FileEditTool {
             tool_use_id: "".to_string(),
             content: format!("File edited: {}", file_path.display()),
             is_error: None,
+            was_persisted: None,
         })
     }
 }

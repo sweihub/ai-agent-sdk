@@ -44,6 +44,7 @@ pub struct ToolResult {
     pub tool_use_id: String,
     pub content: String,
     pub is_error: bool,
+    was_persisted: None,
 }
 
 #[derive(Debug, Clone)]

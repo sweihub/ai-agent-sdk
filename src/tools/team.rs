@@ -129,6 +129,7 @@ impl TeamCreateTool {
                 tool_use_id: "".to_string(),
                 content: format!("Error: Team '{}' already exists.", name),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
         drop(guard);
@@ -165,6 +166,7 @@ impl TeamCreateTool {
                 agent_count
             ),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }
@@ -240,6 +242,7 @@ impl TeamDeleteTool {
                 agent_names.join(", ")
             ),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }
@@ -336,6 +339,7 @@ impl SendMessageTool {
                 recipient, message, inbox_len
             ),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }

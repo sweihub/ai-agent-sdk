@@ -51,6 +51,7 @@ impl SleepTool {
             tool_use_id: "".to_string(),
             content: format!("Slept for {:.1} seconds", duration_secs),
             is_error: None,
+            was_persisted: None,
         })
     }
 }

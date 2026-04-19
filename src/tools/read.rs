@@ -64,6 +64,7 @@ impl FileReadTool {
             tool_use_id: "".to_string(),
             content,
             is_error: None,
+            was_persisted: None,
         })
     }
 }

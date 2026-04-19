@@ -202,6 +202,7 @@ impl GrepTool {
                 tool_use_id: "".to_string(),
                 content: format!("No matches found for pattern \"{}\"", pattern),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -213,6 +214,7 @@ impl GrepTool {
             tool_use_id: "".to_string(),
             content,
             is_error: None,
+            was_persisted: None,
         })
     }
 
@@ -262,6 +264,7 @@ impl GrepTool {
                 tool_use_id: "".to_string(),
                 content: format!("No matches found for pattern \"{}\"", pattern),
                 is_error: None,
+                was_persisted: None,
             });
         }
 
@@ -273,6 +276,7 @@ impl GrepTool {
             tool_use_id: "".to_string(),
             content,
             is_error: None,
+            was_persisted: None,
         })
     }
 

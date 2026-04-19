@@ -111,6 +111,7 @@ impl GlobTool {
             tool_use_id: "".to_string(),
             content: serde_json::to_string_pretty(&structured).unwrap_or(content),
             is_error: None,
+            was_persisted: None,
         })
     }
 

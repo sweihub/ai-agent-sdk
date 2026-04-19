@@ -158,6 +158,7 @@ impl SkillTool {
                         self.get_skill_groups()
                     ),
                     is_error: Some(true),
+                was_persisted: None,
                 });
             }
 
@@ -170,6 +171,7 @@ impl SkillTool {
                     matching.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n")
                 ),
                 is_error: Some(false),
+                was_persisted: None,
             });
         }
 
@@ -202,6 +204,7 @@ impl SkillTool {
                         content.len()
                     ),
                     is_error: Some(false),
+                was_persisted: None,
                 });
             }
 
@@ -210,6 +213,7 @@ impl SkillTool {
                 tool_use_id: "skill".to_string(),
                 content,
                 is_error: Some(false),
+                was_persisted: None,
             });
         }
 
@@ -227,6 +231,7 @@ impl SkillTool {
                     remote_content
                 ),
                 is_error: Some(false),
+                was_persisted: None,
             });
         }
         drop(remote_guard);
@@ -267,6 +272,7 @@ impl SkillTool {
             tool_use_id: "skill".to_string(),
             content,
             is_error: Some(true),
+            was_persisted: None,
         })
     }
 

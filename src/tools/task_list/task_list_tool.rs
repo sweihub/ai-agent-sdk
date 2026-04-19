@@ -127,6 +127,7 @@ impl TaskListTool {
             tool_use_id: "task_list".to_string(),
             content,
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 

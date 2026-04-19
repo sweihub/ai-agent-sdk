@@ -92,6 +92,7 @@ impl AskUserQuestionTool {
                 tool_use_id: "".to_string(),
                 content: "Error: options must have between 2 and 4 choices.".to_string(),
                 is_error: Some(true),
+                was_persisted: None,
             });
         }
 
@@ -140,6 +141,7 @@ impl AskUserQuestionTool {
             tool_use_id: "ask_user_question".to_string(),
             content: response,
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }

@@ -74,6 +74,7 @@ impl TaskStopTool {
             tool_use_id: "".to_string(),
             content: serde_json::to_string_pretty(&result).unwrap_or_default(),
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 }

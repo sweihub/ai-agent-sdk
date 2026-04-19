@@ -11,6 +11,7 @@ pub struct ToolResult {
     pub input: serde_json::Value,
     pub output: serde_json::Value,
     pub timestamp: u64,
+    was_persisted: None,
 }
 
 impl ToolResultStorage {
@@ -71,6 +72,7 @@ mod tests {
             input: serde_json::json!({"command": "ls"}),
             output: serde_json::json!({"stdout": "file.txt"}),
             timestamp: 123456,
+            was_persisted: None,
         };
 
         storage.store("1".to_string(), result).unwrap();

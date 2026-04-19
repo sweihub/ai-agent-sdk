@@ -62,6 +62,7 @@ impl ReadMcpResourceTool {
                 server, uri
             ),
             is_error: None,
+            was_persisted: None,
         })
     }
 }

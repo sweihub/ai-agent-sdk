@@ -190,6 +190,7 @@ impl TaskCreateTool {
             tool_use_id: "task_create".to_string(),
             content,
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 

@@ -106,6 +106,7 @@ impl TaskGetTool {
             tool_use_id: "task_get".to_string(),
             content,
             is_error: Some(false),
+            was_persisted: None,
         })
     }
 

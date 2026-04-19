@@ -41,8 +41,14 @@ impl Default for Message {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
+    #[serde(default = "default_tool_call_type")]
+    pub r#type: String,
     pub name: String,
     pub arguments: serde_json::Value,
+}
+
+fn default_tool_call_type() -> String {
+    "function".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -379,6 +385,20 @@ pub struct ToolResult {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub was_persisted: Option<bool>,
+}
+
+impl Default for ToolResult {
+    fn default() -> Self {
+        Self {
+            result_type: String::new(),
+            tool_use_id: String::new(),
+            content: String::new(),
+            is_error: None,
+            was_persisted: None,
+        }
+    }
 }
 
 /// Content block within a tool_result — either text or tool_reference
@@ -705,7 +725,10 @@ impl ValidationResult {
 
     /// Create an invalid validation result
     pub fn invalid(message: String, error_code: i32) -> Self {
-        ValidationResult::Invalid { message, error_code }
+        ValidationResult::Invalid {
+            message,
+            error_code,
+        }
     }
 
     /// Check if the validation passed
