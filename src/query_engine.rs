@@ -3906,6 +3906,7 @@ mod tests {
             always_load: None,
             is_mcp: if is_mcp { Some(true) } else { None },
             search_hint: Some(format!("{} capability", name.to_lowercase())),
+            aliases: None,
         };
         t
     }

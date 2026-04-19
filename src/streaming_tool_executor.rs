@@ -213,6 +213,7 @@ impl StreamingToolExecutor {
                 ToolMessageUpdate {
                     message: Some(msg),
                     new_context: None,
+                    context_modifier: None,
                 }
             }
             Err(e) => {
@@ -227,6 +228,7 @@ impl StreamingToolExecutor {
                 ToolMessageUpdate {
                     message: Some(msg),
                     new_context: None,
+                    context_modifier: None,
                 }
             }
         };
@@ -472,6 +474,7 @@ async fn execute_tool(
                 ..Default::default()
             }),
             new_context: None,
+            context_modifier: None,
         },
         Err(e) => ToolMessageUpdate {
             message: Some(Message {
@@ -482,6 +485,7 @@ async fn execute_tool(
                 ..Default::default()
             }),
             new_context: None,
+            context_modifier: None,
         },
     };
     result_tx.send(message.clone()).ok();
@@ -523,6 +527,7 @@ fn create_synthetic_error(reason: &str, tool_call_id: &str, tool_name: &str) -> 
     ToolMessageUpdate {
         message: Some(message),
         new_context: None,
+        context_modifier: None,
     }
 }
 
@@ -675,6 +680,7 @@ mod tests {
                 input_schema: ToolInputSchema { schema_type: "object".to_string(), properties: serde_json::json!({}), required: None },
                 annotations: Some(ToolAnnotations { concurrency_safe: Some(true), ..Default::default() }),
                 should_defer: None, always_load: None, is_mcp: None, search_hint: None,
+            aliases: None,
             },
         ];
         let calls = vec![ToolCall {

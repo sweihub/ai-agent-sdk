@@ -4,6 +4,7 @@
 //! Translated from TypeScript toolOrchestration.ts
 
 use crate::constants::env::ai;
+use serde::Serialize;
 use crate::types::{
     Message, MessageRole, ToolAnnotations, ToolCall, ToolDefinition, ToolInputSchema, ToolResult,
 };
@@ -34,6 +35,13 @@ pub struct ToolBatch {
     pub blocks: Vec<ToolCall>,
 }
 
+/// Modifier for tool use context (for contextModifier support).
+#[derive(Debug, Clone)]
+pub struct ContextModifier {
+    pub tool_use_id: String,
+    pub modify_context: fn(crate::types::ToolContext) -> crate::types::ToolContext,
+}
+
 /// Message update for tool orchestration
 #[derive(Debug, Clone)]
 pub struct ToolMessageUpdate {
@@ -41,6 +49,8 @@ pub struct ToolMessageUpdate {
     pub message: Option<Message>,
     /// Updated context after this tool (for serial execution)
     pub new_context: Option<crate::types::ToolContext>,
+    /// Context modifiers for this tool result (for contextModifier support)
+    pub context_modifier: Option<ContextModifier>,
 }
 
 /// Partition tool calls into batches where each batch is either:
@@ -127,6 +137,7 @@ where
                     ..Default::default()
                 }),
                 new_context: Some(current_context.clone()),
+                context_modifier: None,
             });
             mark_tool_use_as_complete(&mut in_progress_ids, &tool_call_id);
             continue;
@@ -158,6 +169,7 @@ where
                 updates.push(ToolMessageUpdate {
                     message: Some(message),
                     new_context: Some(current_context.clone()),
+                    context_modifier: None,
                 });
             }
             Err(e) => {
@@ -174,6 +186,7 @@ where
                 updates.push(ToolMessageUpdate {
                     message: Some(message),
                     new_context: Some(current_context.clone()),
+                    context_modifier: None,
                 });
             }
         }
@@ -251,6 +264,7 @@ where
                 updates.push(ToolMessageUpdate {
                     message: Some(message),
                     new_context: None,
+                    context_modifier: None,
                 });
             }
             Err(e) => {
@@ -266,6 +280,7 @@ where
                 updates.push(ToolMessageUpdate {
                     message: Some(message),
                     new_context: None,
+                    context_modifier: None,
                 });
             }
         }
@@ -361,6 +376,7 @@ mod tests {
             always_load: None,
             is_mcp: None,
             search_hint: None,
+            aliases: None,
         }
     }
 

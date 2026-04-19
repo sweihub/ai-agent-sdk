@@ -159,6 +159,9 @@ pub struct ToolDefinition {
     /// Short capability phrase for keyword search (3-10 words)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_hint: Option<String>,
+    /// Optional aliases for backwards compatibility when a tool is renamed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<String>>,
 }
 
 impl Default for ToolDefinition {
@@ -172,6 +175,7 @@ impl Default for ToolDefinition {
             always_load: None,
             is_mcp: None,
             search_hint: None,
+            aliases: None,
         }
     }
 }
@@ -188,6 +192,7 @@ impl ToolDefinition {
             always_load: None,
             is_mcp: None,
             search_hint: None,
+            aliases: None,
         }
     }
 

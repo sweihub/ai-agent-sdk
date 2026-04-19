@@ -493,6 +493,7 @@ fn create_mcp_tool_definition(
         always_load: None,
         is_mcp: None,
         search_hint: None,
+        aliases: None,
     }
 }
 

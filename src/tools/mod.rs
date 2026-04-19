@@ -136,6 +136,7 @@ mod tests {
                 always_load: None,
                 is_mcp: None,
                 search_hint: None,
+            aliases: None,
             },
             ToolDefinition {
                 name: "FileRead".to_string(),
@@ -150,6 +151,7 @@ mod tests {
                 always_load: None,
                 is_mcp: None,
                 search_hint: None,
+            aliases: None,
             },
         ];
         let filtered = filter_tools(tools, Some(vec!["Bash".to_string()]), None);
@@ -173,6 +175,7 @@ mod tests {
                 always_load: None,
                 is_mcp: None,
                 search_hint: None,
+            aliases: None,
             },
             ToolDefinition {
                 name: "FileRead".to_string(),
@@ -187,6 +190,7 @@ mod tests {
                 always_load: None,
                 is_mcp: None,
                 search_hint: None,
+            aliases: None,
             },
         ];
         let filtered = filter_tools(tools, None, Some(vec!["Bash".to_string()]));

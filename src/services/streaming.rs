@@ -380,6 +380,8 @@ pub struct TrackedTool {
     pub pending_progress: Vec<AgentEvent>,
     /// Whether this tool has errored
     pub has_errored: bool,
+    /// Context modifiers collected during tool execution (for contextModifier support)
+    pub context_modifiers: Vec<fn(crate::types::ToolContext) -> crate::types::ToolContext>,
 }
 
 /// Internal shared state for the streaming executor.
@@ -444,6 +446,7 @@ impl StreamingToolExecutor {
             status: ToolStatus::Queued,
             pending_progress: Vec::new(),
             has_errored: false,
+            context_modifiers: Vec::new(),
         });
     }
 

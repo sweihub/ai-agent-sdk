@@ -131,6 +131,7 @@ pub fn sdk_tool_to_tool_definition(sdk_tool: SdkToolDefinition) -> ToolDefinitio
         always_load: None,
         is_mcp: None,
         search_hint: None,
+        aliases: None,
     }
 }
 
