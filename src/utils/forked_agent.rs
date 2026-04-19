@@ -615,27 +615,9 @@ pub async fn run_forked_agent(
     };
     let _ = agent_id; // reserved for transcript recording
 
-    // In a full implementation, this would call the query loop:
-    //
-    // let query_params = crate::query::query::QueryParams {
-    //     messages: initial_messages,
-    //     system_prompt,
-    //     user_context,
-    //     system_context,
-    //     can_use_tool: config.can_use_tool,
-    //     tool_use_context: Arc::new(isolated_tool_use_context),
-    //     fallback_model: None,
-    //     query_source: query_source.0,
-    //     max_output_tokens_override: max_output_tokens,
-    //     max_turns,
-    //     skip_cache_write,
-    //     task_budget: None,
-    //     deps: None,
-    // };
-    //
-    // let (output_messages, total_usage) = collect_query_results(
-    //     query_params, &fork_label, config.on_message,
-    // ).await?;
+    // In a full implementation, this would call the query engine:
+    // let result = query_engine.submit_message(&prompt).await;
+    // let (output_messages, total_usage) = collect_query_results(result);
 
     let _ = (
         system_prompt,

@@ -1052,6 +1052,9 @@ impl QueryEngine {
         // Note: max_turns check is done AFTER turn completes (matching TypeScript)
         // See below after tool execution loop for the check
 
+        // Apply microcompact before auto-compact: evict old tool result content
+        crate::services::compact::microcompact::microcompact_messages(&mut self.messages);
+
         // Check auto-compact BEFORE entering tool loop - don't wait until after API call
         // This ensures we compact before hitting the token limit
         let threshold = get_auto_compact_threshold(&self.config.model);
@@ -1089,6 +1092,9 @@ impl QueryEngine {
         let mut max_tool_turns = self.config.max_turns;
         while max_tool_turns > 0 {
             max_tool_turns -= 1;
+
+            // Apply microcompact before auto-compact in the tool loop
+            crate::services::compact::microcompact::microcompact_messages(&mut self.messages);
 
             // Check if we should auto-compact based on token count (after tool execution)
             let token_count = compact::estimate_token_count(&self.messages, self.config.max_tokens);
@@ -1309,8 +1315,32 @@ impl QueryEngine {
                             eprintln!("Streaming endpoint returned 404, falling back to non-streaming mode");
                         }
 
-                        // Check if this is a rate limit error that should trigger model fallback
+                        // Check if this is a prompt-too-long error that should trigger reactive compact
                         let error_str = e.to_string().to_lowercase();
+                        let is_prompt_too_long = error_str.contains("413")
+                            || error_str.contains("prompt_too_long")
+                            || error_str.contains("prompt too long")
+                            || error_str.contains("media too large");
+
+                        if is_prompt_too_long {
+                            eprintln!("Prompt too large (413), attempting reactive compact...");
+                            match crate::services::compact::reactive_compact::run_reactive_compact(&self.messages, &self.config.model) {
+                                Ok(reactive_result) if reactive_result.compacted => {
+                                    log::info!(
+                                        "[reactive-compact] reduced {} messages after 413 error",
+                                        reactive_result.messages.len()
+                                    );
+                                    self.messages = reactive_result.messages;
+                                    use_fallback_model = true;
+                                    continue; // Retry with compacted context
+                                }
+                                _ => {
+                                    log::warn!("[reactive-compact] no improvement possible, falling through to non-streaming");
+                                }
+                            }
+                        }
+
+                        // Check if this is a rate limit error that should trigger model fallback
                         let is_rate_limit = error_str.contains("429")
                             || error_str.contains("rate_limit")
                             || error_str.contains("rate limit")
@@ -2189,6 +2219,11 @@ async fn make_nonstreaming_request(
                 result.api_error = Some("max_output_tokens".to_string());
                 return Ok(result);
             }
+        }
+        // Check for prompt-too-long / 413 - trigger reactive compact
+        let error_str = error.to_string().to_lowercase();
+        if error_str.contains("413") || error_str.contains("prompt_too_long") || error_str.contains("prompt too long") {
+            return Err(AgentError::Api("prompt_too_long: context size exceeded. The query engine will attempt reactive compact.".to_string()));
         }
         return Err(AgentError::Api(format!("API error: {}", error)));
     }

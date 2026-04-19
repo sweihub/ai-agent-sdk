@@ -208,8 +208,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_lsp_tool_git_ignored() {
-        // Create a temp git repo with an ignored file
-        let temp_dir = std::env::temp_dir().join("test_lsp_gitignore2");
+        // Create a temp git repo inside the project dir (must be within a git repo for LSP)
+        let temp_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_lsp_gitignore2");
+        // Clean up stale dir from previous test runs
+        let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).ok();
         std::process::Command::new("git")
             .args(["init"])
