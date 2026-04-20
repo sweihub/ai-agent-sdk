@@ -10,9 +10,9 @@
 #![allow(async_fn_in_trait)]
 
 pub mod agent;
-#[cfg(test)]
-mod agent_tests;
 pub mod query_engine;
+#[cfg(test)]
+mod tests;
 pub mod error;
 pub mod hooks;
 pub mod interact;
