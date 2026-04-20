@@ -1550,6 +1550,30 @@ impl QueryEngine {
                     ));
                 }
 
+                // No tool calls - check for unfinished tasks before finalizing
+                if self.config.max_turns == 0
+                    || self.turn_count < self.config.max_turns
+                {
+                    if let Some(nudge) = crate::utils::inspector::check() {
+                        log::debug!(
+                            "[query_engine] unfinished tasks found, nudging LLM to continue (turn {})",
+                            self.turn_count
+                        );
+                        self.messages.push(crate::types::Message {
+                            role: crate::types::MessageRole::System,
+                            content: nudge,
+                            ..Default::default()
+                        });
+                        if let Some(ref cb) = self.config.on_event {
+                            cb(AgentEvent::Thinking {
+                                turn: self.turn_count + 1,
+                            });
+                        }
+                        self.turn_count += 1;
+                        continue;
+                    }
+                }
+
                 // No tool calls - this is the final response
                 let response_text = streaming_result.content.clone();
 

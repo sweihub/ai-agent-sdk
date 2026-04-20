@@ -18,6 +18,24 @@ fn get_todos_map() -> &'static Mutex<HashMap<String, Vec<TodoItem>>> {
     TODOS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Get all todos for a session, filtered to non-completed items.
+pub fn get_unfinished_todos(session_key: &str) -> Vec<TodoItem> {
+    let guard = get_todos_map().lock().unwrap();
+    guard
+        .get(session_key)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.status != "completed")
+        .collect()
+}
+
+/// Get all todos for a session (full list).
+pub fn get_all_todos(session_key: &str) -> Vec<TodoItem> {
+    let guard = get_todos_map().lock().unwrap();
+    guard.get(session_key).cloned().unwrap_or_default()
+}
+
 /// A single todo item
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TodoItem {

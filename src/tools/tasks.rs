@@ -27,6 +27,22 @@ fn get_tasks_map() -> &'static Mutex<HashMap<String, Task>> {
     TASKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Get all non-completed, non-deleted tasks.
+pub fn get_unfinished_tasks() -> Vec<Task> {
+    let guard = get_tasks_map().lock().unwrap();
+    guard
+        .values()
+        .filter(|t| t.status != "completed" && t.status != "deleted")
+        .cloned()
+        .collect()
+}
+
+/// Get all tasks (including deleted and internal).
+pub fn get_all_tasks() -> Vec<Task> {
+    let guard = get_tasks_map().lock().unwrap();
+    guard.values().cloned().collect()
+}
+
 fn next_task_id() -> String {
     let id = TASK_COUNTER.fetch_add(1, Ordering::SeqCst);
     format!("task-{}", id)

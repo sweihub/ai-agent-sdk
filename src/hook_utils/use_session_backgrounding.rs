@@ -1,6 +1,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+/// Default minimum background time (5 minutes, matching away summary blur delay)
+pub const DEFAULT_MIN_BACKGROUND_TIME_MS: u64 = 5 * 60 * 1000;
+
 pub struct SessionBackgroundingState {
     is_backgrounded: AtomicBool,
     backgrounded_at: AtomicU64,

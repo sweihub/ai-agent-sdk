@@ -133,6 +133,17 @@ pub async fn list_tasks(_task_list_id: &str) -> Result<Vec<Task>, String> {
     Ok(store.tasks.values().cloned().collect())
 }
 
+/// Get all non-completed tasks from the in-memory store.
+pub fn get_unfinished_tasks() -> Vec<Task> {
+    let store = get_store().lock().unwrap();
+    store
+        .tasks
+        .values()
+        .filter(|t| t.status != TaskStatus::Completed)
+        .cloned()
+        .collect()
+}
+
 /// Update a task
 pub async fn update_task(
     _task_list_id: &str,

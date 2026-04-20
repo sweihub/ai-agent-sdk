@@ -24,6 +24,8 @@ Localize all environment variables from prefix `CLAUDE_CODE_` to `AI_CODE_`, `AN
 
 Localize directory name `.claude` to `.ai`, file name `CLAUDE.md` to `AI.md`.
 
+Unit tests go to `src/tests/` directory.
+
 Ensure translated Rust file starts with a comment of its source TypeScript path.
 
 Always check original typescript logics to fix the Rust issues.

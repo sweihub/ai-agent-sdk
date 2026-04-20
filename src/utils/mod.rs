@@ -27,6 +27,7 @@ pub mod system_theme;
 pub mod task;
 pub mod task_list;
 pub mod tempfile;
+pub mod terminal_focus;
 pub mod theme;
 pub mod thinking;
 pub mod ultraplan;
@@ -269,6 +270,7 @@ pub mod session_storage;
 pub mod session_storage_portable;
 pub mod session_title;
 pub mod session_url;
+pub mod inspector;
 
 pub use mtls::{
     clear_mtls_cache, configure_mtls, get_ca_cert, get_client_cert, get_client_key, is_mtls_enabled,

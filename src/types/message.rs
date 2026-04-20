@@ -1,4 +1,5 @@
 // Source: ~/claudecode/openclaudecode/src/types/message.ts
+// Also includes: ~/claudecode/openclaudecode/src/utils/messages.ts (createAwaySummaryMessage)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,6 +15,7 @@ pub struct MessageOrigin {
 
 /// Base message type with common fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct MessageBase {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
@@ -312,4 +314,22 @@ pub enum Message {
     Tombstone(TombstoneMessage),
     #[serde(rename = "grouped_tool_use")]
     GroupedToolUse(GroupedToolUseMessage),
+}
+
+/// Create an away summary system message.
+/// Translates createAwaySummaryMessage from utils/messages.ts.
+pub fn create_away_summary_message(content: &str) -> Message {
+    Message::System(SystemMessage {
+        base: MessageBase {
+            uuid: Some(uuid::Uuid::new_v4().to_string()),
+            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            created_at: Some(chrono::Utc::now().to_rfc3339()),
+            is_meta: Some(false),
+            ..Default::default()
+        },
+        message_type: "system".to_string(),
+        subtype: Some("away_summary".to_string()),
+        level: None,
+        message: Some(content.to_string()),
+    })
 }
