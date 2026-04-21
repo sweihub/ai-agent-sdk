@@ -1,5 +1,6 @@
 // Source: /data/home/swei/claudecode/openclaudecode/src/utils/filePersistence/types.ts
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -511,6 +512,104 @@ pub struct AgentOptions {
     pub on_event: Option<std::sync::Arc<dyn Fn(AgentEvent) + Send + Sync>>,
 }
 
+/// Builder for [`AgentOptions`] — provides a fluent API for configuring the agent.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let agent = AgentBuilder::new()
+///     .model("claude-sonnet-4-6")
+///     .max_turns(20)
+///     .max_tokens(8192)
+///     .thinking(ThinkingConfig::Enabled { budget_tokens: 4096 })
+///     .build();
+/// ```
+#[derive(Clone, Default)]
+pub struct AgentBuilder {
+    options: AgentOptions,
+}
+
+impl AgentBuilder {
+    /// Create a new builder with default options.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the model name (e.g., "claude-sonnet-4-6").
+    pub fn model(mut self, model: &str) -> Self {
+        self.options.model = Some(model.to_string());
+        self
+    }
+
+    /// Set the API key.
+    pub fn api_key(mut self, api_key: &str) -> Self {
+        self.options.api_key = Some(api_key.to_string());
+        self
+    }
+
+    /// Set a custom base URL for the API.
+    pub fn base_url(mut self, base_url: &str) -> Self {
+        self.options.base_url = Some(base_url.to_string());
+        self
+    }
+
+    /// Set the working directory.
+    pub fn cwd(mut self, cwd: &str) -> Self {
+        self.options.cwd = Some(cwd.to_string());
+        self
+    }
+
+    /// Set a custom system prompt.
+    pub fn system_prompt(mut self, prompt: &str) -> Self {
+        self.options.system_prompt = Some(prompt.to_string());
+        self
+    }
+
+    /// Set the maximum number of turns.
+    pub fn max_turns(mut self, max_turns: u32) -> Self {
+        self.options.max_turns = Some(max_turns);
+        self
+    }
+
+    /// Set the maximum budget in USD.
+    pub fn max_budget_usd(mut self, budget: f64) -> Self {
+        self.options.max_budget_usd = Some(budget);
+        self
+    }
+
+    /// Set the maximum tokens for a single response.
+    pub fn max_tokens(mut self, max_tokens: u32) -> Self {
+        self.options.max_tokens = Some(max_tokens);
+        self
+    }
+
+    /// Set the fallback model.
+    pub fn fallback_model(mut self, model: &str) -> Self {
+        self.options.fallback_model = Some(model.to_string());
+        self
+    }
+
+    /// Set thinking configuration.
+    pub fn thinking(mut self, thinking: ThinkingConfig) -> Self {
+        self.options.thinking = Some(thinking);
+        self
+    }
+
+    /// Set an event callback.
+    pub fn on_event<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(AgentEvent) + Send + Sync + 'static,
+    {
+        self.options.on_event = Some(std::sync::Arc::new(callback));
+        self
+    }
+
+    /// Build the [`AgentOptions`] from the configured values.
+    pub fn build(self) -> AgentOptions {
+        self.options
+    }
+}
+
 /// Thinking configuration for the API (matches TypeScript ThinkingConfig)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -648,6 +747,16 @@ pub enum AgentEvent {
     MessageStop,
     /// Request started (before API call) - matches TypeScript 'stream_request_start'
     RequestStart,
+    /// Request completed (API response received, streaming finished)
+    /// Matches TypeScript 'stream_request_end' — useful for TUI spinner management.
+    StreamRequestEnd,
+    /// Rate limit status change — notifies TUI/CLI when a rate limit is hit or cleared
+    RateLimitStatus {
+        /// true if currently rate-limited, false if rate limit has cleared
+        is_rate_limited: bool,
+        /// Optional retry-after seconds (if the server provided it)
+        retry_after_secs: Option<f64>,
+    },
     /// Max turns reached - matches TypeScript 'max_turns_reached' attachment
     MaxTurnsReached { max_turns: u32, turn_count: u32 },
     /// Tombstone event for orphaned messages on streaming fallback

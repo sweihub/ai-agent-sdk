@@ -84,6 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AgentEvent::Tombstone { message } => {
                     println!("[Tombstone] {}", message.chars().take(100).collect::<String>());
                 }
+                AgentEvent::StreamRequestEnd => {
+                    println!("\n[Request] response received");
+                }
+                AgentEvent::RateLimitStatus { is_rate_limited, retry_after_secs: _ } => {
+                    println!("\n[Rate Limit] {}", if is_rate_limited { "hit" } else { "cleared" });
+                }
             }
         },
     );

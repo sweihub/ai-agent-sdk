@@ -1467,6 +1467,12 @@ impl QueryEngine {
                         // Check if streaming failed with 429 (all retries exhausted)
                         if is_429_error(&e) {
                             eprintln!("Rate limit hit (429), exhausted 429 retries");
+                            if let Some(ref cb) = self.config.on_event {
+                                cb(AgentEvent::RateLimitStatus {
+                                    is_rate_limited: true,
+                                    retry_after_secs: None,
+                                });
+                            }
                         }
 
                         // Handle user abort (matching TypeScript APIUserAbortError handling)
@@ -1511,6 +1517,11 @@ impl QueryEngine {
 
                 // Successfully got result, break out of loop
                 break;
+            }
+
+            // Emit StreamRequestEnd — TUI can use this to hide spinner after API response
+            if let Some(ref cb) = self.config.on_event {
+                cb(AgentEvent::StreamRequestEnd);
             }
 
             // Check for tool calls in the streaming result

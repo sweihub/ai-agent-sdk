@@ -5,7 +5,7 @@ use crate::error::AgentError;
 use crate::stream::{CancelGuard, EventSubscriber, QueryStream};
 use crate::types::AgentEvent;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use crate::tools::bash::BashTool;
 use crate::tools::edit::FileEditTool;
 use crate::tools::glob::GlobTool;
@@ -690,10 +690,6 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
 }
 
 /// Subscriber info for fan-out event delivery
-struct Subscriber {
-    tx: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<crate::types::AgentEvent>>>,
-}
-
 pub struct Agent {
     config: AgentOptions,
     model: String,
@@ -703,15 +699,10 @@ pub struct Agent {
     session_id: String,
     abort_controller: std::sync::Arc<crate::utils::AbortController>,
     /// Persisted QueryEngine for multi-turn reuse (matches TypeScript pattern).
-    /// Created lazily on first query() call. Recreated when engine-critical config changes.
-    /// The engine owns all conversation state: messages, usage tracking, turn count, tool registry.
-    persist_engine: Option<QueryEngine>,
+    /// Shared via Arc<TokioMutex> so query_stream() spawned task and query()
+    /// can access the same conversation state (messages, usage, turns).
+    persist_engine: Option<Arc<TokioMutex<QueryEngine>>>,
     engine_config: Option<EngineConfig>,
-    /// Active subscribers for the `subscribe()` pub/sub API.
-    /// Each subscriber holds a channel receiver for event delivery.
-    subscribers: Vec<Subscriber>,
-    /// Next subscriber index to assign (for remove tracking).
-    _sub_index: usize,
 }
 
 impl From<AgentOptions> for Agent {
@@ -774,14 +765,12 @@ impl Agent {
             abort_controller: std::sync::Arc::new(crate::utils::create_abort_controller_default()),
             persist_engine: None,
             engine_config: None,
-            subscribers: Vec::new(),
-            _sub_index: 0,
         }
     }
 
     /// Lazily create or return the persisted QueryEngine.
     /// Recreates the engine when engine-critical config has changed.
-    fn get_or_create_engine(&mut self) -> &mut QueryEngine {
+    fn get_or_create_engine(&mut self) -> Arc<TokioMutex<QueryEngine>> {
         let needs_recreate = self.persist_engine.is_none()
             || match &self.engine_config {
                 Some(ec) => {
@@ -828,7 +817,7 @@ impl Agent {
             };
             let mut engine = QueryEngine::new(config);
             register_all_tool_executors(&mut engine);
-            self.persist_engine = Some(engine);
+            self.persist_engine = Some(Arc::new(TokioMutex::new(engine)));
             self.engine_config = Some(EngineConfig {
                 model: self.model.clone(),
                 api_key: self.api_key.clone(),
@@ -838,7 +827,7 @@ impl Agent {
             });
         }
 
-        self.persist_engine.as_mut().unwrap()
+        Arc::clone(self.persist_engine.as_ref().unwrap())
     }
 
     pub fn get_model(&self) -> &str {
@@ -852,10 +841,12 @@ impl Agent {
     /// Get all messages in the conversation history.
     /// Delegates to the persisted QueryEngine which owns the message state
     /// (matches TypeScript: engine.mutableMessages).
+    /// Uses try_lock() — returns messages if no async operation holds the lock,
+    /// otherwise returns an empty vec (the engine is busy in a query_stream).
     pub fn get_messages(&self) -> Vec<Message> {
         self.persist_engine
             .as_ref()
-            .map(|e| e.get_messages())
+            .and_then(|e| e.try_lock().ok().map(|guard| guard.get_messages()))
             .unwrap_or_default()
     }
 
@@ -1039,35 +1030,22 @@ impl Agent {
         engine.execute_tool(name, input, tool_call_id).await
     }
 
-    /// Main query method - handles the full agent loop including tool use,
-    /// streaming responses, and multi-turn interaction with the LLM.
-    ///
-    /// Reuses a persisted QueryEngine across calls so that conversation history,
-    /// usage tracking, and tool state accumulate naturally (matches TypeScript pattern).
-    pub async fn query(&mut self, prompt: &str) -> Result<QueryResult, AgentError> {
+    /// Build the system prompt by combining AI.md, memory mechanics,
+    /// base system prompt, and custom system prompt.
+    fn build_system_prompt(&self, cwd: &std::path::Path) -> Option<String> {
         use crate::ai_md::load_ai_md;
         use crate::memdir::load_memory_prompt_sync;
-        use crate::prompts::build_system_prompt;
-        use crate::tools::get_all_base_tools;
+        use crate::prompts::build_system_prompt as base_build_system_prompt;
 
-        let cwd = self.config.cwd.clone().unwrap_or_else(|| {
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string())
-        });
-        let cwd_path = std::path::Path::new(&cwd);
-
-        // Build system prompt: AI.md + memory mechanics + custom system prompt
-        let ai_md_prompt = load_ai_md(cwd_path).ok().flatten();
-
+        let ai_md_prompt = load_ai_md(cwd).ok().flatten();
         let memory_mechanics_prompt = if self.config.system_prompt.is_some()
-            && crate::memdir::has_auto_mem_path_override() {
+            && crate::memdir::has_auto_mem_path_override()
+        {
             load_memory_prompt_sync()
         } else {
             None
         };
-
-        let base_system_prompt = build_system_prompt();
+        let base_system_prompt = base_build_system_prompt();
 
         let system_prompt = match (&ai_md_prompt, &memory_mechanics_prompt, &self.config.system_prompt) {
             (Some(ai_md), Some(mem), Some(custom)) => Some(format!(
@@ -1088,165 +1066,178 @@ impl Agent {
             (None, None, Some(custom)) => Some(format!("{}\n\n{}", base_system_prompt, custom)),
             (None, None, None) => Some(base_system_prompt),
         };
+        system_prompt
+    }
 
-        // Use base tools if tool_pool is empty
-        let tools = if self.tool_pool.is_empty() {
-            get_all_base_tools()
+    /// Select the tools to use: all base tools if tool_pool is empty, otherwise the tool pool.
+    fn select_tools(&self) -> Vec<ToolDefinition> {
+        if self.tool_pool.is_empty() {
+            crate::tools::get_all_base_tools()
         } else {
             self.tool_pool.clone()
-        };
+        }
+    }
 
-        // Clone config values before getting the engine (avoids borrow conflicts)
-        let on_event = self.config.on_event.clone();
-        let thinking = self.config.thinking.clone();
-        let subagent_abort = std::sync::Arc::clone(&self.abort_controller);
+    /// Main query method - handles the full agent loop including tool use,
+    /// streaming responses, and multi-turn interaction with the LLM.
+    ///
+    /// Reuses a persisted QueryEngine across calls so that conversation history,
+    /// usage tracking, and tool state accumulate naturally (matches TypeScript pattern).
+    pub async fn query(&mut self, prompt: &str) -> Result<QueryResult, AgentError> {
+        let cwd = self.config.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        });
+        let cwd_path = std::path::Path::new(&cwd);
 
+        let system_prompt = self.build_system_prompt(cwd_path);
+        let tools = self.select_tools();
+
+        // Get the shared persisted engine
         let engine = self.get_or_create_engine();
 
-        // Update per-query config that can change between calls
-        engine.config.system_prompt = system_prompt;
-        engine.config.tools = tools;
-        engine.config.on_event = on_event;
-        engine.config.thinking = thinking;
+        let start = std::time::Instant::now();
+        let (response_text, exit_reason, current_model, usage, turns) = {
+            let mut eng = engine.lock().await;
 
-        // Register the Agent tool executor for sub-agent spawning.
-        // Overwrites the previous registration (same key) — safe because
-        // the closure captures the engine's config values which are already updated.
-        let engine_tools = engine.config.tools.clone();
-        let engine_model = engine.config.model.clone();
-        let engine_api_key = engine.config.api_key.clone();
-        let engine_base_url = engine.config.base_url.clone();
-        let engine_cwd = engine.config.cwd.clone();
+            // Update per-query config
+            eng.config.system_prompt = system_prompt;
+            eng.config.tools = tools;
+            eng.config.on_event = self.config.on_event.clone();
+            eng.config.thinking = self.config.thinking.clone();
 
-        let agent_tool_executor = move |input: serde_json::Value,
-                                        _ctx: &ToolContext|
-              -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<ToolResult, AgentError>> + Send>,
-        > {
-            let cwd = engine_cwd.clone();
-            let api_key = engine_api_key.clone();
-            let base_url = engine_base_url.clone();
-            let model = engine_model.clone();
-            let tool_pool = engine_tools.clone();
-            let subagent_abort = subagent_abort.clone();
+            // Snapshot engine config values needed by the subagent closure
+            let engine_tools = eng.config.tools.clone();
+            let engine_model = eng.config.model.clone();
+            let engine_api_key = eng.config.api_key.clone();
+            let engine_base_url = eng.config.base_url.clone();
+            let engine_cwd = eng.config.cwd.clone();
+            let subagent_abort = std::sync::Arc::clone(&self.abort_controller);
 
-            Box::pin(async move {
-                let description = input["description"].as_str().unwrap_or("subagent");
-                let subagent_prompt = input["prompt"].as_str().unwrap_or("");
-                let subagent_model = input["model"]
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| model.clone());
-                let max_turns = input["max_turns"]
-                    .as_u64()
-                    .or_else(|| input["maxTurns"].as_u64())
-                    .unwrap_or(10) as u32;
+            let agent_tool_executor = move |input: serde_json::Value,
+                                            _ctx: &ToolContext|
+                  -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<ToolResult, AgentError>> + Send>,
+            > {
+                let cwd = engine_cwd.clone();
+                let api_key = engine_api_key.clone();
+                let base_url = engine_base_url.clone();
+                let model = engine_model.clone();
+                let tool_pool = engine_tools.clone();
+                let subagent_abort = subagent_abort.clone();
 
-                let subagent_type = input["subagent_type"]
-                    .as_str()
-                    .or_else(|| input["subagentType"].as_str())
-                    .map(|s| s.to_string());
+                Box::pin(async move {
+                    let description = input["description"].as_str().unwrap_or("subagent");
+                    let subagent_prompt = input["prompt"].as_str().unwrap_or("");
+                    let subagent_model = input["model"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| model.clone());
+                    let max_turns = input["max_turns"]
+                        .as_u64()
+                        .or_else(|| input["maxTurns"].as_u64())
+                        .unwrap_or(10) as u32;
 
-                let _run_in_background = input["run_in_background"]
-                    .as_bool()
-                    .or_else(|| input["runInBackground"].as_bool())
-                    .unwrap_or(false);
+                    let subagent_type = input["subagent_type"]
+                        .as_str()
+                        .or_else(|| input["subagentType"].as_str())
+                        .map(|s| s.to_string());
 
-                let agent_name = input["name"].as_str().map(|s| s.to_string());
+                    let _run_in_background = input["run_in_background"]
+                        .as_bool()
+                        .or_else(|| input["runInBackground"].as_bool())
+                        .unwrap_or(false);
 
-                let _team_name = input["team_name"]
-                    .as_str()
-                    .or_else(|| input["teamName"].as_str())
-                    .map(|s| s.to_string());
+                    let agent_name = input["name"].as_str().map(|s| s.to_string());
 
-                let _mode = input["mode"].as_str().map(|s| s.to_string());
+                    let _team_name = input["team_name"]
+                        .as_str()
+                        .or_else(|| input["teamName"].as_str())
+                        .map(|s| s.to_string());
 
-                let subagent_cwd = input["cwd"]
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| cwd.clone());
+                    let _mode = input["mode"].as_str().map(|s| s.to_string());
 
-                let _isolation = input["isolation"].as_str().map(|s| s.to_string());
+                    let subagent_cwd = input["cwd"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| cwd.clone());
 
-                let system_prompt = build_agent_system_prompt(description, subagent_type.as_deref());
+                    let _isolation = input["isolation"].as_str().map(|s| s.to_string());
 
-                let mut sub_engine = QueryEngine::new(QueryEngineConfig {
-                    cwd: subagent_cwd,
-                    model: subagent_model.to_string(),
-                    api_key,
-                    base_url,
-                    tools: tool_pool,
-                    system_prompt: Some(system_prompt),
-                    max_turns,
-                    max_budget_usd: None,
-                    max_tokens: 16384,
-                    fallback_model: None,
-                    user_context: std::collections::HashMap::new(),
-                    system_context: std::collections::HashMap::new(),
-                    can_use_tool: None,
-                    on_event: None,
-                    thinking: None,
-                    abort_controller: Some(subagent_abort.clone()),
-                });
+                    let system_prompt = build_agent_system_prompt(description, subagent_type.as_deref());
 
-                match sub_engine.submit_message(subagent_prompt).await {
-                    Ok((result_text, _)) => {
-                        let mut content = format!("[Subagent: {}]", description);
-                        if let Some(ref name) = agent_name {
-                            content = format!("[Subagent: {} ({})]", description, name);
+                    let mut sub_engine = QueryEngine::new(QueryEngineConfig {
+                        cwd: subagent_cwd,
+                        model: subagent_model.to_string(),
+                        api_key,
+                        base_url,
+                        tools: tool_pool,
+                        system_prompt: Some(system_prompt),
+                        max_turns,
+                        max_budget_usd: None,
+                        max_tokens: 16384,
+                        fallback_model: None,
+                        user_context: std::collections::HashMap::new(),
+                        system_context: std::collections::HashMap::new(),
+                        can_use_tool: None,
+                        on_event: None,
+                        thinking: None,
+                        abort_controller: Some(subagent_abort.clone()),
+                    });
+
+                    match sub_engine.submit_message(subagent_prompt).await {
+                        Ok((result_text, _)) => {
+                            let mut content = format!("[Subagent: {}]", description);
+                            if let Some(ref name) = agent_name {
+                                content = format!("[Subagent: {} ({})]", description, name);
+                            }
+                            content = format!("{}\n\n{}", content, result_text);
+                            Ok(ToolResult {
+                                result_type: "text".to_string(),
+                                tool_use_id: "agent_tool".to_string(),
+                                content,
+                                is_error: Some(false),
+                                was_persisted: None,
+                            })
                         }
-                        content = format!("{}\n\n{}", content, result_text);
-                        Ok(ToolResult {
+                        Err(e) => Ok(ToolResult {
                             result_type: "text".to_string(),
                             tool_use_id: "agent_tool".to_string(),
-                            content,
-                            is_error: Some(false),
+                            content: format!("[Subagent: {}] Error: {}", description, e),
+                            is_error: Some(true),
                             was_persisted: None,
-                        })
+                        }),
                     }
-                    Err(e) => Ok(ToolResult {
-                        result_type: "text".to_string(),
-                        tool_use_id: "agent_tool".to_string(),
-                        content: format!("[Subagent: {}] Error: {}", description, e),
-                        is_error: Some(true),
-                        was_persisted: None,
-                    }),
-                }
-            })
-        };
+                })
+            };
 
-        engine.register_tool("Agent".to_string(), agent_tool_executor);
+            eng.register_tool("Agent".to_string(), agent_tool_executor);
 
-        let start = std::time::Instant::now();
-        let (response_text, exit_reason) = engine.submit_message(prompt).await?;
-
-        // Collect all engine state before dropping engine reference (avoids borrow conflicts)
-        let current_model = engine.config.model.clone();
-        let engine_usage = engine.get_usage();
-        let engine_turns = engine.get_turn_count();
+            // Run the query — collect results before dropping the lock
+            let result = eng.submit_message(prompt).await?;
+            let response_text = result.0;
+            let exit_reason = result.1;
+            let current_model = eng.config.model.clone();
+            let usage = eng.get_usage();
+            let turns = eng.get_turn_count();
+            (response_text, exit_reason, current_model, usage, turns)
+        }; // Lock released here
 
         // Track model in case it changed (for recreation detection)
         if current_model != self.model {
             self.model = current_model;
         }
 
-        let usage = TokenUsage {
-            input_tokens: engine_usage.input_tokens,
-            output_tokens: engine_usage.output_tokens,
-            cache_creation_input_tokens: engine_usage.cache_creation_input_tokens,
-            cache_read_input_tokens: engine_usage.cache_read_input_tokens,
-        };
-        let usage = TokenUsage {
-            input_tokens: engine_usage.input_tokens,
-            output_tokens: engine_usage.output_tokens,
-            cache_creation_input_tokens: engine_usage.cache_creation_input_tokens,
-            cache_read_input_tokens: engine_usage.cache_read_input_tokens,
-        };
-
         Ok(QueryResult {
             text: response_text,
-            usage,
-            num_turns: engine_turns,
+            usage: TokenUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                cache_read_input_tokens: usage.cache_read_input_tokens,
+            },
+            num_turns: turns,
             duration_ms: start.elapsed().as_millis() as u64,
             exit_reason,
         })
@@ -1296,70 +1287,76 @@ impl Agent {
     /// }
     /// ```
     pub async fn query_stream(&mut self, prompt: &str) -> Result<QueryStream, AgentError> {
-        // Snapshot config values needed to build a new engine
         let cwd = self.config.cwd.clone().unwrap_or_else(|| {
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| ".".to_string())
         });
-        let model = self.model.clone();
-        let api_key = self.api_key.clone();
-        let base_url = self.base_url.clone();
-        let max_turns = self.config.max_turns.unwrap_or(10);
-        let max_budget_usd = self.config.max_budget_usd;
-        let max_tokens = self.config.max_tokens.unwrap_or(16384);
-        let fallback_model = self.config.fallback_model.clone();
-        let system_prompt_cfg = self.config.system_prompt.clone();
-        let thinking = self.config.thinking.clone();
-        let on_event_callback = self.config.on_event.clone();
+        let cwd_path = std::path::Path::new(&cwd);
 
-        // Build system prompt (same logic as query())
-        let tools: Vec<ToolDefinition> = if self.tool_pool.is_empty() {
-            crate::tools::get_all_base_tools()
-        } else {
-            self.tool_pool.clone()
-        };
+        let system_prompt = self.build_system_prompt(cwd_path);
+        let tools = self.select_tools();
 
-        // Clone prompt for spawned task (avoids &'str lifetime issue)
+        // Clone prompt for spawned task
         let prompt_owned = prompt.to_string();
+
+        // Get the shared persisted engine — the spawned task locks and uses it directly.
+        // This ensures messages, turn_count, and usage accumulate across all calls.
+        let engine = self.get_or_create_engine();
 
         // Create event channel
         let (stream_tx, stream_rx) = mpsc::channel(256);
         let stream_tx_clone = stream_tx.clone();
+        let result_storage: Arc<std::sync::OnceLock<QueryResult>> = Arc::new(std::sync::OnceLock::new());
+        let result_storage_for_task = Arc::clone(&result_storage);
 
-        // Spawn engine loop on tokio task
-        let task = tokio::spawn(async move {
-            let abort_ctrl = crate::utils::create_abort_controller_default();
-            let abort_signal_for_task = abort_ctrl.signal().clone();
+        // Spawn engine loop on tokio task — uses the shared persisted engine via Arc
+        let task = tokio::spawn(Self::run_stream_task(
+            engine,
+            system_prompt,
+            tools,
+            prompt_owned,
+            stream_tx_clone,
+            stream_tx,
+            result_storage_for_task,
+            self.config.thinking.clone(),
+        ));
 
-            let config = QueryEngineConfig {
-                cwd: cwd.clone(),
-                model: model.clone(),
-                api_key: api_key.clone(),
-                base_url: base_url.clone(),
-                tools,
-                system_prompt: system_prompt_cfg,
-                max_turns,
-                max_budget_usd,
-                max_tokens,
-                fallback_model,
-                user_context: std::collections::HashMap::new(),
-                system_context: std::collections::HashMap::new(),
-                can_use_tool: None,
-                on_event: Some(std::sync::Arc::new(
-                    move |event: AgentEvent| {
-                        // Non-blocking send — drop events if channel is full
-                        let _ = stream_tx_clone.send(event);
-                    },
-                )),
-                thinking: thinking.clone(),
-                abort_controller: Some(std::sync::Arc::new(abort_ctrl)),
-            };
+        Ok(QueryStream::new(stream_rx, task, result_storage))
+    }
 
-            let mut engine = QueryEngine::new(config);
-            register_all_tool_executors(&mut engine);
+    /// Background task: lock shared engine, configure, run submit_message, emit events.
+    async fn run_stream_task(
+        engine: Arc<TokioMutex<QueryEngine>>,
+        system_prompt: Option<String>,
+        tools: Vec<ToolDefinition>,
+        prompt_owned: String,
+        stream_tx: mpsc::Sender<AgentEvent>,
+        stream_tx_for_done: mpsc::Sender<AgentEvent>,
+        result_storage: Arc<std::sync::OnceLock<QueryResult>>,
+        thinking: Option<crate::types::ThinkingConfig>,
+    ) {
+        // Wrap the on_event callback to push events to stream_tx_for_done
+        let on_event_tx = stream_tx_for_done.clone();
+        let on_event = std::sync::Arc::new(
+            move |event: AgentEvent| {
+                let _ = on_event_tx.send(event);
+            },
+        );
 
-            // Register Agent tool for subagent spawning
+        // Lock, configure, and run in a single critical section.
+        // Engine state (messages, turn_count, usage) is modified in-place and
+        // persists in the Arc for future query()/query_stream() calls.
+        let (text, exit_reason, usage, num_turns) = {
+            let mut engine = engine.lock().await;
+
+            // Update per-query config
+            engine.config.system_prompt = system_prompt;
+            engine.config.tools = tools;
+            engine.config.on_event = Some(on_event);
+            engine.config.thinking = thinking;
+
+            // Register the Agent tool executor for sub-agent spawning.
             let engine_tools = engine.config.tools.clone();
             let engine_model = engine.config.model.clone();
             let engine_api_key = engine.config.api_key.clone();
@@ -1376,7 +1373,6 @@ impl Agent {
                 let base_url = engine_base_url.clone();
                 let model = engine_model.clone();
                 let tool_pool = engine_tools.clone();
-                let subagent_abort = abort_signal_for_task.clone();
 
                 Box::pin(async move {
                     let description = input["description"].as_str().unwrap_or("subagent");
@@ -1449,12 +1445,13 @@ impl Agent {
 
             engine.register_tool("Agent".to_string(), agent_tool_executor);
 
-            // Run the query loop
+            // Run the query loop — messages/turns/usage accumulate in this engine
             let result = engine.submit_message(&prompt_owned).await;
 
-            // Build and dispatch Done event (always fires, even on abort/error)
             let (exit_reason, text, usage, num_turns) = match &result {
-                Ok((text, reason)) => (reason.clone(), text.clone(), engine.get_usage(), engine.get_turn_count()),
+                Ok((text, reason)) => {
+                    (reason.clone(), text.clone(), engine.get_usage(), engine.get_turn_count())
+                }
                 Err(e) => (
                     crate::types::ExitReason::ModelError {
                         error: e.to_string(),
@@ -1465,23 +1462,25 @@ impl Agent {
                 ),
             };
 
-            if let Some(ref cb) = engine.config.on_event {
-                cb(AgentEvent::Done {
-                    result: crate::types::QueryResult {
-                        text,
-                        usage,
-                        num_turns,
-                        duration_ms: 0,
-                        exit_reason,
-                    },
-                });
-            }
+            (text, exit_reason, usage, num_turns)
+        }; // Lock released here — engine persists in Arc for future calls
 
-            // Signal completion by dropping the channel sender
-            drop(stream_tx);
-        });
+        let query_result = QueryResult {
+            text: text.clone(),
+            usage: usage.clone(),
+            num_turns,
+            duration_ms: 0,
+            exit_reason: exit_reason.clone(),
+        };
 
-        Ok(QueryStream::new(stream_rx, task))
+        // Store the result so QueryStream::result() can return it after stream ends
+        let _ = result_storage.set(query_result.clone());
+
+        // Dispatch Done event (always fires, even on abort/error)
+        let _ = stream_tx_for_done.send(AgentEvent::Done { result: query_result });
+
+        // Signal completion by dropping the channel sender
+        drop(stream_tx);
     }
 
     /// Subscribe to agent events for the current and subsequent queries.
@@ -1489,8 +1488,9 @@ impl Agent {
     /// Returns an [`EventSubscriber`] (implements [`futures_util::Stream`]) and a
     /// [`CancelGuard`]. Events flow to the subscriber until the guard is dropped.
     ///
-    /// This is useful for decoupled TUI architectures where the event consumer
-    /// runs independently of query execution.
+    /// Takes `&self` (not `&mut self`) — you can subscribe from a shared reference,
+    /// enabling decoupled TUI architectures where the subscriber is owned by a
+    /// separate task from the agent.
     ///
     /// # Example
     ///
@@ -1508,19 +1508,9 @@ impl Agent {
     ///     // render in TUI
     /// }
     /// ```
-    pub fn subscribe(&mut self) -> (EventSubscriber, CancelGuard) {
+    pub fn subscribe(&self) -> (EventSubscriber, CancelGuard) {
         let (tx, rx) = mpsc::channel(256);
-        let guard = CancelGuard::new(tx.clone());
-        let idx = self._sub_index;
-        self._sub_index += 1;
-
-        self.subscribers.push(Subscriber {
-            tx: std::sync::Mutex::new(Some(tx)),
-        });
-
-        // Trigger fan-out for any ongoing stream by updating the on_event callback
-        // This is handled by wrapping on_event when query/query_stream runs
-
+        let guard = CancelGuard::new(tx);
         (EventSubscriber::new(rx), guard)
     }
 
@@ -1543,7 +1533,9 @@ impl Agent {
         self.abort_controller.abort(None);
         // Also interrupt the persisted engine if it exists
         if let Some(ref engine) = self.persist_engine {
-            engine.interrupt();
+            if let Ok(mut eng) = engine.try_lock() {
+                eng.interrupt();
+            }
         }
     }
 }

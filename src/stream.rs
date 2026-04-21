@@ -1,9 +1,9 @@
 // Source: Internal module — async stream interface for CLI/TUI users
 // Provides futures::Stream-based event consumption for the AI Agent SDK.
 
-use crate::types::AgentEvent;
+use crate::types::{AgentEvent, QueryResult};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
@@ -34,14 +34,32 @@ use futures_util::Stream;
 pub struct QueryStream {
     receiver: mpsc::Receiver<AgentEvent>,
     task: tokio::task::JoinHandle<()>,
+    result: Arc<OnceLock<QueryResult>>,
 }
 
 impl QueryStream {
     pub(crate) fn new(
         receiver: mpsc::Receiver<AgentEvent>,
         task: tokio::task::JoinHandle<()>,
+        result: Arc<OnceLock<QueryResult>>,
     ) -> Self {
-        Self { receiver, task }
+        Self { receiver, task, result }
+    }
+
+    /// Get the final [`QueryResult`] after the stream has completed.
+    ///
+    /// Returns `None` if the stream is still running.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut stream = agent.query_stream("hello").await?;
+    /// while let Some(ev) = stream.next().await {}
+    /// let result = stream.result().expect("stream completed");
+    /// println!("turns={}", result.num_turns);
+    /// ```
+    pub fn result(&self) -> Option<QueryResult> {
+        self.result.get().cloned()
     }
 }
 
@@ -137,43 +155,3 @@ impl Drop for CancelGuard {
     }
 }
 
-/// A list of active subscriber channel senders for fan-out event delivery.
-///
-/// Used by `subscribe()` to deliver events to multiple listeners simultaneously.
-#[derive(Default)]
-pub(crate) struct EventFanOut {
-    senders: Arc<Mutex<Vec<mpsc::Sender<AgentEvent>>>>,
-}
-
-impl EventFanOut {
-    pub(crate) fn new() -> Self {
-        Self {
-            senders: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    /// Clone for sharing across query iterations.
-    pub(crate) fn clone(&self) -> Self {
-        Self {
-            senders: Arc::clone(&self.senders),
-        }
-    }
-
-    /// Add a new subscriber channel sender.
-    pub(crate) fn add(&self, tx: mpsc::Sender<AgentEvent>) {
-        self.senders.lock().unwrap().push(tx);
-    }
-
-    /// Remove a specific sender (called by CancelGuard).
-    pub(crate) fn remove(&self, idx: usize) {
-        let mut senders = self.senders.lock().unwrap();
-        if idx < senders.len() {
-            senders.remove(idx);
-        }
-    }
-
-    /// Get the number of active subscribers.
-    pub(crate) fn len(&self) -> usize {
-        self.senders.lock().unwrap().len()
-    }
-}

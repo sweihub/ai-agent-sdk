@@ -71,6 +71,7 @@ pub mod team_memory;
 pub mod user_agent;
 
 pub use agent::Agent;
+pub use types::api_types::AgentBuilder;
 pub use ai_md::{
     get_ai_md_files, load_ai_md, process_ai_md_file, AiMdContent, AiMdFile, AiMdType,
     AI_MD_INSTRUCTION_PROMPT, MAX_AI_MD_CHARACTER_COUNT,
