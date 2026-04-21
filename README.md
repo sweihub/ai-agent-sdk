@@ -186,6 +186,37 @@ registry.register("PreToolUse", HookDefinition {
 });
 ```
 
+### Interrupting Agent Execution
+
+Call `agent.interrupt()` from another task to cancel a running `prompt()` or `submit_message()`.
+The operation returns `AgentError::UserAborted`.
+
+```rust
+use ai_agent::Agent;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+
+let agent = Arc::new(Mutex::new(Agent::new("MiniMaxAI/MiniMax-M2.5", 10)));
+let interrupt_agent = Arc::clone(&agent);
+
+// Spawn a task that interrupts after 5 seconds
+let interrupt_task = tokio::spawn(async move {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    interrupt_agent.lock().await.interrupt();
+});
+
+// Run the prompt with exclusive access
+let result = {
+    let mut ag = agent.lock().await;
+    ag.prompt("Process a large codebase").await
+};
+
+let _ = tokio::time::timeout(Duration::from_secs(10), interrupt_task).await;
+```
+
+See `examples/27_interrupt.rs` for a full runnable example.
+
 ## Configuration
 
 ### Agent Options

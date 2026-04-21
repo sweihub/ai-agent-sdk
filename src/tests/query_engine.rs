@@ -25,6 +25,7 @@ async fn test_engine_creation() {
         can_use_tool: None,
         on_event: None,
         thinking: None,
+        abort_controller: None,
     });
     assert_eq!(engine.get_turn_count(), 0);
 }
@@ -47,6 +48,7 @@ async fn test_engine_submit_message() {
         can_use_tool: None,
         on_event: None,
         thinking: None,
+        abort_controller: None,
     });
 
     let result = engine.submit_message("Hello").await;
@@ -312,7 +314,7 @@ fn test_tool_result_message_format() {
 fn test_tool_execution_context() {
     let ctx = ToolContext {
         cwd: "/tmp/test".to_string(),
-        abort_signal: None,
+        abort_signal: Default::default(),
     };
 
     assert_eq!(ctx.cwd, "/tmp/test");
@@ -442,6 +444,7 @@ async fn test_engine_with_tools_config() {
         can_use_tool: None,
         on_event: None,
         thinking: None,
+        abort_controller: None,
     });
 
     // Verify tools are stored in config
@@ -467,6 +470,7 @@ async fn test_engine_system_prompt_includes_tool_guidance() {
         can_use_tool: None,
         on_event: None,
         thinking: None,
+        abort_controller: None,
     });
 
     // Verify system prompt is set
@@ -575,6 +579,7 @@ async fn test_engine_message_history_with_tool_calls() {
         can_use_tool: None,
         on_event: None,
         thinking: None,
+        abort_controller: None,
     });
 
     // Add user message

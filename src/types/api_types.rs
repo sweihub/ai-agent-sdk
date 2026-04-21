@@ -380,11 +380,34 @@ pub struct ToolInputSchema {
     pub required: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ToolContext {
     pub cwd: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub abort_signal: Option<()>,
+    #[serde(skip)]
+    pub abort_signal: std::sync::Arc<crate::utils::AbortSignal>,
+}
+
+// Skip Serialize on ToolContext because Arc<AbortSignal> doesn't implement Serialize
+impl Serialize for ToolContext {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Serialize only the cwd field, skipping abort_signal
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ToolContext", 1)?;
+        state.serialize_field("cwd", &self.cwd)?;
+        state.end()
+    }
+}
+
+impl Default for ToolContext {
+    fn default() -> Self {
+        Self {
+            cwd: String::new(),
+            abort_signal: std::sync::Arc::new(crate::utils::AbortSignal::new(0)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

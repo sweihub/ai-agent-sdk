@@ -83,7 +83,7 @@ mod tests {
                 serde_json::json!({"command": "echo hello"}),
                 &ToolContext {
                     cwd: "/tmp".to_string(),
-                    abort_signal: None,
+                    abort_signal: Default::default(),
                 },
             )
             .await;

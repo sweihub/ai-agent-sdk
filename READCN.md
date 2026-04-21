@@ -186,6 +186,37 @@ registry.register("PreToolUse", HookDefinition {
 });
 ```
 
+### 中断 Agent 执行
+
+从其他任务调用 `agent.interrupt()` 可以取消正在运行的 `prompt()` 或 `submit_message()`。
+操作会返回 `AgentError::UserAborted`。
+
+```rust
+use ai_agent::Agent;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+
+let agent = Arc::new(Mutex::new(Agent::new("MiniMaxAI/MiniMax-M2.5", 10)));
+let interrupt_agent = Arc::clone(&agent);
+
+// 派生一个在 5 秒后中断的任务
+let interrupt_task = tokio::spawn(async move {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    interrupt_agent.lock().await.interrupt();
+});
+
+// 以独占方式运行 prompt
+let result = {
+    let mut ag = agent.lock().await;
+    ag.prompt("处理大型代码库").await
+};
+
+let _ = tokio::time::timeout(Duration::from_secs(10), interrupt_task).await;
+```
+
+参见 `examples/27_interrupt.rs` 获取完整可运行示例。
+
 ## 配置
 
 ### Agent 选项

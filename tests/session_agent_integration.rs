@@ -1115,6 +1115,7 @@ async fn test_query_engine_with_custom_tool() {
         can_use_tool: None,
         on_event: None,
         thinking: None,
+        abort_controller: None,
     });
 
     // Should fail with connection error (no real API server)

@@ -307,7 +307,7 @@ mod tests {
         let tool = GrepTool::new();
         let result = tool.execute(
             serde_json::json!({"pattern": "hello", "path": "/tmp/test_grep.txt", "output_mode": "content"}),
-            &ToolContext { cwd: "/tmp".to_string(), abort_signal: None },
+            &ToolContext { cwd: "/tmp".to_string(), abort_signal: Default::default() },
         ).await;
         assert!(result.is_ok());
         let content = result.unwrap().content;

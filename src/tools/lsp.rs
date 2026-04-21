@@ -232,7 +232,7 @@ mod tests {
         });
         let context = ToolContext {
             cwd: temp_dir.to_string_lossy().to_string(),
-            abort_signal: None,
+            abort_signal: Default::default(),
         };
         let result = tool.execute(input, &context).await;
         assert!(result.is_ok());

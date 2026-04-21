@@ -43,10 +43,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = BashTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -59,10 +60,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = ReadTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -75,10 +77,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = WriteTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -91,10 +94,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = GlobTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -107,10 +111,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = GrepTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -124,10 +129,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = FileEditTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -155,10 +161,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = SkillTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -171,10 +178,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = MonitorTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -187,10 +195,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = SendUserFileTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -203,10 +212,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = WebBrowserTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -219,10 +229,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = WebFetchTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -235,10 +246,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = WebSearchTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -251,10 +263,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = NotebookEditTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -267,10 +280,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = TaskCreateTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -283,10 +297,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = TaskListTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -299,10 +314,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = TaskUpdateTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -315,10 +331,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = TaskGetTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -331,10 +348,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = TodoWriteTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -347,10 +365,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = CronCreateTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -363,10 +382,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = CronDeleteTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -379,10 +399,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = CronListTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -395,10 +416,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = ConfigTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -411,10 +433,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = EnterWorktreeTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -427,10 +450,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = ExitWorktreeTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -443,10 +467,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = EnterPlanModeTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -459,10 +484,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = ExitPlanModeTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -475,10 +501,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = AskUserQuestionTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -491,10 +518,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = ToolSearchTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -507,10 +535,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = TeamCreateTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -523,10 +552,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = TeamDeleteTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -539,10 +569,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = SendMessageTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -555,10 +586,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = SleepTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -571,10 +603,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = LSPTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -587,10 +620,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = RemoteTriggerTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -603,10 +637,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = ListMcpResourcesTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -619,10 +654,11 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
           -> BoxFuture<Result<ToolResult, AgentError>> {
         let tool_clone = ReadMcpResourceTool::new();
         let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
         Box::pin(async move {
             let ctx2 = ToolContext {
                 cwd,
-                abort_signal: None,
+                abort_signal: abort_signal.clone(),
             };
             tool_clone.execute(input, &ctx2).await
         })
@@ -638,6 +674,7 @@ pub struct Agent {
     tool_pool: Vec<ToolDefinition>,
     messages: Vec<Message>,
     session_id: String,
+    abort_controller: std::sync::Arc<crate::utils::AbortController>,
 }
 
 impl From<AgentOptions> for Agent {
@@ -698,6 +735,7 @@ impl Agent {
             tool_pool: options.tools.clone(),
             messages: vec![],
             session_id,
+            abort_controller: std::sync::Arc::new(crate::utils::create_abort_controller_default()),
         }
     }
 
@@ -775,12 +813,14 @@ impl Agent {
             can_use_tool: None,
             on_event: None,
             thinking: None,
+            abort_controller: Some(self.abort_controller.clone()),
         });
 
         // Register all tool executors (including Bash, Read, Write, etc.)
         register_all_tool_executors(&mut engine);
 
         // Register Agent tool executor with full parameter support
+        let subagent_abort = std::sync::Arc::clone(&self.abort_controller);
         let agent_tool_executor = move |input: serde_json::Value,
                                         _ctx: &ToolContext|
               -> std::pin::Pin<
@@ -790,6 +830,7 @@ impl Agent {
             let api_key = api_key.clone();
             let base_url = base_url.clone();
             let model = model.clone();
+            let subagent_abort = subagent_abort.clone();
 
             Box::pin(async move {
                 // Extract ALL parameters from input
@@ -857,6 +898,7 @@ impl Agent {
                     can_use_tool: None,
                     on_event: None,
                     thinking: None,
+                    abort_controller: Some(subagent_abort.clone()),
                 });
 
                 match sub_engine.submit_message(subagent_prompt).await {
@@ -988,6 +1030,7 @@ impl Agent {
             can_use_tool: None,
             on_event,
             thinking,
+            abort_controller: Some(self.abort_controller.clone()),
         });
 
         // Register all tool executors on the engine so they can be called
@@ -995,6 +1038,7 @@ impl Agent {
 
         // Clone tool_pool before the closure to avoid capturing self
         let tool_pool = self.tool_pool.clone();
+        let subagent_abort = std::sync::Arc::clone(&self.abort_controller);
 
         // Register the Agent tool executor to spawn sub-agents with full parameter support
         let agent_tool_executor = move |input: serde_json::Value,
@@ -1007,6 +1051,7 @@ impl Agent {
             let base_url = base_url.clone();
             let model = model.clone();
             let tool_pool = tool_pool.clone();
+            let subagent_abort = subagent_abort.clone();
 
             Box::pin(async move {
                 // Extract ALL parameters from input
@@ -1077,6 +1122,7 @@ impl Agent {
                     can_use_tool: None,
                     on_event: None,
                     thinking: None,
+                    abort_controller: Some(subagent_abort.clone()),
                 });
 
                 // Run the subagent
@@ -1134,6 +1180,25 @@ impl Agent {
             duration_ms: start.elapsed().as_millis() as u64,
             exit_reason,
         })
+    }
+
+    /// Interrupt the agent loop. This aborts the current `prompt()` or `query()`
+    /// call, cancelling any in-flight API requests and tool execution.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut agent = Agent::new("claude-sonnet-4-6", 10);
+    ///
+    /// tokio::spawn(async move {
+    ///     agent.prompt("Do a lot of work").await.unwrap();
+    /// });
+    ///
+    /// tokio::time::sleep(Duration::from_secs(5)).await;
+    /// agent.interrupt(); // Cancel the running prompt
+    /// ```
+    pub fn interrupt(&self) {
+        self.abort_controller.abort(None);
     }
 }
 

@@ -180,6 +180,8 @@ pub struct QueryEngine {
     transition: Option<String>,
     /// Pending tool use summary from previous turn (Haiku-generated)
     pending_tool_use_summary: Option<String>,
+    /// Abort controller for interrupting the query engine loop
+    abort_controller: crate::utils::AbortController,
 }
 
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
@@ -220,6 +222,9 @@ pub struct QueryEngineConfig {
     /// Thinking configuration for the API
     /// Defaults to Adaptive if not specified
     pub thinking: Option<crate::types::api_types::ThinkingConfig>,
+    /// External abort controller for interrupting the query engine loop.
+    /// If provided, this will be used instead of creating a new one.
+    pub abort_controller: Option<std::sync::Arc<crate::utils::AbortController>>,
 }
 
 impl Default for QueryEngineConfig {
@@ -240,12 +245,17 @@ impl Default for QueryEngineConfig {
             can_use_tool: None,
             on_event: None,
             thinking: None,
+            abort_controller: None,
         }
     }
 }
 
 impl QueryEngine {
-    pub fn new(config: QueryEngineConfig) -> Self {
+    pub fn new(mut config: QueryEngineConfig) -> Self {
+        let abort_controller = config.abort_controller.take().map_or_else(
+            || crate::utils::create_abort_controller_default(),
+            |arc| (*arc).clone(),
+        );
         Self {
             config,
             messages: vec![],
@@ -271,6 +281,7 @@ impl QueryEngine {
             transition: None,
             pending_tool_use_summary: None,
             empty_response_retries: 0,
+            abort_controller,
         }
     }
 
@@ -314,6 +325,12 @@ impl QueryEngine {
     }
 
     /// Set initial messages (for continuing a conversation)
+    /// Interrupt the running query engine. This will abort the current
+    /// tool execution loop and stop any in-flight API requests.
+    pub fn interrupt(&self) {
+        self.abort_controller.abort(None);
+    }
+
     pub fn set_messages(&mut self, messages: Vec<crate::types::Message>) {
         self.messages = messages;
     }
@@ -439,7 +456,7 @@ impl QueryEngine {
     ) -> Result<ToolResult, AgentError> {
         let context = ToolContext {
             cwd: self.config.cwd.clone(),
-            abort_signal: None,
+            abort_signal: Arc::clone(self.abort_controller.signal()),
         };
 
         // Clone the Arc out of the maps
@@ -1701,7 +1718,7 @@ impl QueryEngine {
             // This matches TypeScript's runTools() with partitioning
             let tool_context = crate::types::ToolContext {
                 cwd: self.config.cwd.clone(),
-                abort_signal: None,
+                abort_signal: Arc::clone(self.abort_controller.signal()),
             };
 
             // Create executor closure using the tool executors stored in QueryEngine
@@ -1712,6 +1729,7 @@ impl QueryEngine {
             let can_use_tool = self.config.can_use_tool;
             let cwd = self.config.cwd.clone();
             let on_event = self.config.on_event.clone();
+            let abort_signal = self.abort_controller.signal().clone();
 
             let executor = move |name: String, args: serde_json::Value, tool_call_id: String| {
                 let tool_executors = tool_executors.clone();
@@ -1720,6 +1738,7 @@ impl QueryEngine {
                 let can_use_tool = can_use_tool;
                 let cwd = cwd.clone();
                 let on_event = on_event.clone();
+                let abort_signal = abort_signal.clone();
                 async move {
                     // The actual tool execution is now handled by QueryEngine::execute_tool
                     // but since we are in a closure passed to orchestration::run_tools,
@@ -1763,7 +1782,7 @@ impl QueryEngine {
 
                     let context = crate::types::ToolContext {
                         cwd,
-                        abort_signal: None,
+                        abort_signal: abort_signal.clone(),
                     };
 
                     let executor_fn = tool_executors.get(&name).cloned();

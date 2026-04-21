@@ -160,6 +160,15 @@ impl Clone for AbortSignal {
     }
 }
 
+impl std::fmt::Debug for AbortSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AbortSignal")
+            .field("aborted", &self.aborted.load(Ordering::SeqCst))
+            .field("max_listeners", &self.max_listeners)
+            .finish()
+    }
+}
+
 /// Creates a child AbortController that aborts when its parent aborts.
 /// Aborting the child does NOT affect the parent.
 ///
