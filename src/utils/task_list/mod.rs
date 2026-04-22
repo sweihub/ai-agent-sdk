@@ -103,6 +103,13 @@ fn get_store() -> &'static Mutex<TaskStore> {
     TASK_STORE.get_or_init(|| Mutex::new(TaskStore::new()))
 }
 
+#[cfg(test)]
+pub fn reset_task_store() {
+    let mut store = get_store().lock().unwrap();
+    store.tasks.clear();
+    store.high_water_mark = 0;
+}
+
 /// Generate the next task ID
 fn next_task_id() -> String {
     let mut store = get_store().lock().unwrap();
@@ -218,6 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_and_get_task() {
+        reset_task_store();
         let task_list_id = get_task_list_id();
         let task = Task {
             id: String::new(),
@@ -240,13 +248,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_tasks() {
+        reset_task_store();
         let task_list_id = get_task_list_id();
+        // Create a task first so list_tasks has something to return
+        let task = Task {
+            id: String::new(),
+            subject: "Test task".to_string(),
+            description: "Test description".to_string(),
+            active_form: None,
+            owner: None,
+            status: TaskStatus::Pending,
+            blocks: vec![],
+            blocked_by: vec![],
+            metadata: None,
+        };
+        create_task(&task_list_id, task).await.unwrap();
         let tasks = list_tasks(&task_list_id).await.unwrap();
         assert!(!tasks.is_empty());
     }
 
     #[tokio::test]
     async fn test_delete_task() {
+        reset_task_store();
         let task_list_id = get_task_list_id();
         let task = Task {
             id: String::new(),
