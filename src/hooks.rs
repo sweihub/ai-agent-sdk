@@ -440,6 +440,158 @@ pub fn create_hook_registry(config: Option<HookConfig>) -> HookRegistry {
     registry
 }
 
+/// Free function: Run PreToolUse hooks from a registry.
+/// Returns Ok(true) if any hook blocked, Ok(false) otherwise.
+/// Can be called from closures where &self is not available.
+pub async fn run_pre_tool_use_hooks(
+    registry: &HookRegistry,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    tool_use_id: &str,
+    cwd: &str,
+) -> Result<bool, crate::error::AgentError> {
+    if !registry.has_hooks("PreToolUse") {
+        return Ok(false);
+    }
+    let input = HookInput {
+        event: "PreToolUse".to_string(),
+        tool_name: Some(tool_name.to_string()),
+        tool_input: Some(tool_input.clone()),
+        tool_output: None,
+        tool_use_id: Some(tool_use_id.to_string()),
+        session_id: None,
+        cwd: Some(cwd.to_string()),
+        error: None,
+    };
+    let results = registry.execute("PreToolUse", input).await;
+    for output in results {
+        if output.block == Some(true) {
+            return Err(crate::error::AgentError::Tool(format!(
+                "Tool '{}' blocked by PreToolUse hook",
+                tool_name
+            )));
+        }
+    }
+    Ok(false)
+}
+
+/// Free function: Run PostToolUse hooks from a registry.
+pub async fn run_post_tool_use_hooks(
+    registry: &HookRegistry,
+    tool_name: &str,
+    tool_output: &crate::types::ToolResult,
+    tool_use_id: &str,
+    cwd: &str,
+) {
+    if !registry.has_hooks("PostToolUse") {
+        return;
+    }
+    let input = HookInput {
+        event: "PostToolUse".to_string(),
+        tool_name: Some(tool_name.to_string()),
+        tool_input: None,
+        tool_output: Some(serde_json::json!({
+            "result_type": tool_output.result_type,
+            "content": tool_output.content,
+            "is_error": tool_output.is_error,
+        })),
+        tool_use_id: Some(tool_use_id.to_string()),
+        session_id: None,
+        cwd: Some(cwd.to_string()),
+        error: None,
+    };
+    let _ = registry.execute("PostToolUse", input).await;
+}
+
+/// Free function: Run PostToolUseFailure hooks from a registry.
+pub async fn run_post_tool_use_failure_hooks(
+    registry: &HookRegistry,
+    tool_name: &str,
+    error: &str,
+    tool_use_id: &str,
+    cwd: &str,
+) {
+    if !registry.has_hooks("PostToolUseFailure") {
+        return;
+    }
+    let input = HookInput {
+        event: "PostToolUseFailure".to_string(),
+        tool_name: Some(tool_name.to_string()),
+        tool_input: None,
+        tool_output: None,
+        tool_use_id: Some(tool_use_id.to_string()),
+        session_id: None,
+        cwd: Some(cwd.to_string()),
+        error: Some(error.to_string()),
+    };
+    let _ = registry.execute("PostToolUseFailure", input).await;
+}
+
+/// Free function: Run Stop hooks from a registry.
+/// Returns prevent_continuation and any blocking error messages.
+pub async fn run_stop_hooks(
+    registry: &HookRegistry,
+    cwd: &str,
+    final_text: &str,
+) -> StopHookResult {
+    if !registry.has_hooks("Stop") {
+        return StopHookResult::default();
+    }
+    let input = HookInput {
+        event: "Stop".to_string(),
+        tool_name: None,
+        tool_input: None,
+        tool_output: Some(serde_json::json!({ "text": final_text })),
+        tool_use_id: None,
+        session_id: None,
+        cwd: Some(cwd.to_string()),
+        error: None,
+    };
+    let results = registry.execute("Stop", input).await;
+    let mut prevent_continuation = false;
+    let mut blocking_errors = Vec::new();
+    for output in results {
+        if output.block == Some(true) {
+            if let Some(msg) = output.message {
+                blocking_errors.push(msg);
+            }
+        }
+    }
+    StopHookResult {
+        prevent_continuation: blocking_errors.is_empty(),
+        blocking_errors,
+    }
+}
+
+/// Result of running Stop hooks.
+#[derive(Debug, Default)]
+pub struct StopHookResult {
+    pub prevent_continuation: bool,
+    pub blocking_errors: Vec<String>,
+}
+
+/// Free function: Run StopFailure hooks (fire-and-forget).
+pub async fn run_stop_failure_hooks(
+    registry: &HookRegistry,
+    error: &str,
+    cwd: &str,
+) {
+    if !registry.has_hooks("StopFailure") {
+        return;
+    }
+    let input = HookInput {
+        event: "StopFailure".to_string(),
+        tool_name: None,
+        tool_input: None,
+        tool_output: None,
+        tool_use_id: None,
+        session_id: None,
+        cwd: Some(cwd.to_string()),
+        error: Some(error.to_string()),
+    };
+    let _ = registry.execute("StopFailure", input).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

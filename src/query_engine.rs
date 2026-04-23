@@ -163,6 +163,8 @@ pub struct QueryEngine {
     tool_executors: Mutex<HashMap<String, Arc<ToolExecutor>>>,
     /// Tool render metadata: name -> closures for computing display info and rendering results
     tool_render_fns: Mutex<HashMap<String, ToolRenderFns>>,
+    /// Tool backfill functions: name -> function that mutates input for observers
+    tool_backfill_fns: Mutex<HashMap<String, Arc<dyn Fn(&mut serde_json::Value) + Send + Sync>>>,
     /// Hook registry for PreToolUse/PostToolUse hooks
     hook_registry: Arc<Mutex<Option<HookRegistry>>>,
     /// Auto-compaction tracking state
@@ -187,6 +189,12 @@ pub struct QueryEngine {
     pending_tool_use_summary: Option<String>,
     /// Abort controller for interrupting the query engine loop
     abort_controller: crate::utils::AbortController,
+    /// Token budget tracker (TOKEN_BUDGET feature)
+    budget_tracker: crate::token_budget::BudgetTracker,
+    /// Output tokens consumed in the current turn (for TOKEN_BUDGET)
+    turn_tokens: u64,
+    /// Content replacement state for aggregate tool result budget enforcement
+    content_replacement_state: Option<crate::services::compact::ContentReplacementState>,
 }
 
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
@@ -220,9 +228,9 @@ pub struct QueryEngineConfig {
     /// System context (additional context to append to system prompt)
     pub system_context: HashMap<String, String>,
     /// Permission check function - called BEFORE tool execution
-    /// Returns true if tool can be used, false if denied
+    /// Returns PermissionResult::Allow, ::Deny, ::Ask, or ::Passthrough
     pub can_use_tool:
-        Option<std::sync::Arc<dyn Fn(ToolDefinition, serde_json::Value) -> bool + Send + Sync>>,
+        Option<std::sync::Arc<dyn Fn(ToolDefinition, serde_json::Value) -> crate::permission::PermissionResult + Send + Sync>>,
     /// Callback for agent events (tool start/complete/error, thinking, done)
     pub on_event: Option<std::sync::Arc<dyn Fn(AgentEvent) + Send + Sync>>,
     /// Thinking configuration for the API
@@ -231,6 +239,12 @@ pub struct QueryEngineConfig {
     /// External abort controller for interrupting the query engine loop.
     /// If provided, this will be used instead of creating a new one.
     pub abort_controller: Option<std::sync::Arc<crate::utils::AbortController>>,
+    /// Token budget target in tokens (TOKEN_BUDGET feature).
+    /// When set, the query loop continues until 90% of this budget is consumed,
+    /// or diminishing returns are detected.
+    pub token_budget: Option<u64>,
+    /// Optional agent ID for subagent identification. Token budget is skipped for subagents.
+    pub agent_id: Option<String>,
 }
 
 impl Default for QueryEngineConfig {
@@ -252,6 +266,8 @@ impl Default for QueryEngineConfig {
             on_event: None,
             thinking: None,
             abort_controller: None,
+            token_budget: None,
+            agent_id: None,
         }
     }
 }
@@ -276,6 +292,7 @@ impl QueryEngine {
             http_client: reqwest::Client::new(),
             tool_executors: Mutex::new(HashMap::new()),
             tool_render_fns: Mutex::new(HashMap::new()),
+            tool_backfill_fns: Mutex::new(HashMap::new()),
             hook_registry: Arc::new(Mutex::new(None)),
             auto_compact_tracking: AutoCompactTracking::default(),
             permission_denials: Vec::new(),
@@ -288,6 +305,11 @@ impl QueryEngine {
             pending_tool_use_summary: None,
             empty_response_retries: 0,
             abort_controller,
+            budget_tracker: crate::token_budget::BudgetTracker::new(),
+            turn_tokens: 0,
+            content_replacement_state: Some(
+                crate::services::compact::create_content_replacement_state(),
+            ),
         }
     }
 
@@ -304,6 +326,19 @@ impl QueryEngine {
             .lock()
             .unwrap()
             .insert(name, Arc::new(executor));
+    }
+
+    /// Register a backfill function for a tool.
+    /// The function mutates a clone of the tool input before it's seen by hooks/events/transcripts.
+    /// The original input is still passed to the tool executor (preserves prompt cache).
+    pub fn register_tool_backfill<F>(&mut self, name: String, backfill_fn: F)
+    where
+        F: Fn(&mut serde_json::Value) + Send + Sync + 'static,
+    {
+        self.tool_backfill_fns
+            .lock()
+            .unwrap()
+            .insert(name, Arc::new(backfill_fn));
     }
 
     /// Register a tool executor with render metadata for display hooks.
@@ -394,6 +429,12 @@ impl QueryEngine {
                 true
             }
         });
+
+        // Sort and deduplicate upfront tools for prompt cache stability
+        let upfront = crate::tools::assemble_tool_pool(
+            &upfront,
+            &[], // deferred tools handled separately
+        );
 
         (upfront, deferred)
     }
@@ -494,22 +535,38 @@ impl QueryEngine {
 
         if let Some(executor) = executor {
             // PRE-TOOL PERMISSION CHECK - matches TypeScript's wrappedCanUseTool
-            // Check if tool is allowed before execution
+            // Returns 3-way PermissionResult: Allow, Deny, Ask, Passthrough
             if let Some(can_use_tool_fn) = &self.config.can_use_tool {
-                // Find the tool definition
                 if let Some(tool_def) = self.config.tools.iter().find(|t| &t.name == name) {
-                    // Call can_use_tool to check permission
-                    if !can_use_tool_fn(tool_def.clone(), input.clone()) {
-                        // Tool denied - track for SDK reporting and return error
-                        self.permission_denials.push(PermissionDenial {
-                            tool_name: name.to_string(),
-                            tool_use_id: tool_call_id.clone(),
-                            tool_input: input.clone(),
-                        });
-                        return Err(AgentError::Tool(format!(
-                            "Tool '{}' permission denied",
-                            name
-                        )));
+                    match can_use_tool_fn(tool_def.clone(), input.clone()) {
+                        crate::permission::PermissionResult::Allow(_)
+                        | crate::permission::PermissionResult::Passthrough { .. } => {
+                            // Allowed, continue
+                        }
+                        crate::permission::PermissionResult::Deny(d) => {
+                            self.permission_denials.push(PermissionDenial {
+                                tool_name: name.to_string(),
+                                tool_use_id: tool_call_id.clone(),
+                                tool_input: input.clone(),
+                            });
+                            return Err(AgentError::Tool(format!(
+                                "Tool '{}' permission denied: {}",
+                                name, d.message
+                            )));
+                        }
+                        crate::permission::PermissionResult::Ask(a) => {
+                            // In SDK mode, Ask defaults to deny with a message
+                            // (CLI would prompt the user interactively)
+                            self.permission_denials.push(PermissionDenial {
+                                tool_name: name.to_string(),
+                                tool_use_id: tool_call_id.clone(),
+                                tool_input: input.clone(),
+                            });
+                            return Err(AgentError::Tool(format!(
+                                "Tool '{}' requires user confirmation (Ask mode not supported in SDK): {}",
+                                name, a.message
+                            )));
+                        }
                     }
                 }
             }
@@ -1265,6 +1322,8 @@ impl QueryEngine {
         // Note: max_turns check is done AFTER turn completes (matching TypeScript)
         // See below after tool execution loop for the check
 
+        // Apply snip compact before microcompact (establishes compaction order)
+        crate::services::compact::snip_compact_if_known(&self.messages);
         // Apply microcompact before auto-compact: evict old tool result content
         crate::services::compact::microcompact::microcompact_messages(&mut self.messages);
 
@@ -1306,6 +1365,8 @@ impl QueryEngine {
         while max_tool_turns > 0 {
             max_tool_turns -= 1;
 
+            // Apply snip compact before microcompact (establishes compaction order)
+            crate::services::compact::snip_compact_if_known(&self.messages);
             // Apply microcompact before auto-compact in the tool loop
             crate::services::compact::microcompact::microcompact_messages(&mut self.messages);
 
@@ -1372,9 +1433,10 @@ impl QueryEngine {
             // Build request with tools if available
             // Always use streaming for all backends (matching TypeScript behavior)
             // Non-streaming fallback will be used if streaming fails
+            let effective_max_tokens = self.max_output_tokens_override.unwrap_or(self.config.max_tokens);
             let mut request_body = serde_json::json!({
                 "model": model,
-                "max_tokens": self.config.max_tokens,
+                "max_tokens": effective_max_tokens,
                 "messages": api_messages,
                 "stream": true
             });
@@ -1586,6 +1648,13 @@ impl QueryEngine {
                         }
 
                         // For all other errors (including exhausted 429 retries without fallback), return
+                        // Fire StopFailure hooks (fire-and-forget, matches TypeScript)
+                        {
+                            let registry_clone = self.hook_registry.lock().unwrap().as_ref().cloned();
+                            if let Some(registry) = registry_clone {
+                                let _ = crate::hooks::run_stop_failure_hooks(&registry, &e.to_string(), &self.config.cwd).await;
+                            }
+                        }
                         return Err(e);
                     }
                 };
@@ -1610,6 +1679,9 @@ impl QueryEngine {
                     const ESCALATED_MAX_TOKENS: u32 = 64_000;
 
                     if self.max_output_tokens_recovery_count < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT {
+                        // Escalate max_tokens for the retry (matches TypeScript escalation)
+                        self.max_output_tokens_override = Some(ESCALATED_MAX_TOKENS);
+
                         // Inject recovery message to resume generation
                         let recovery_message = crate::types::Message {
                             role: crate::types::MessageRole::User,
@@ -1729,6 +1801,7 @@ impl QueryEngine {
                 // Update total usage (matching TypeScript usage tracking)
                 self.total_usage.input_tokens += streaming_result.usage.input_tokens;
                 self.total_usage.output_tokens += streaming_result.usage.output_tokens;
+                self.turn_tokens += streaming_result.usage.output_tokens;
 
                 // Update total cost (matching TypeScript cost tracking)
                 self.total_cost += streaming_result.cost;
@@ -1742,6 +1815,7 @@ impl QueryEngine {
 
                 // Reset recovery count on successful completion
                 self.max_output_tokens_recovery_count = 0;
+                self.max_output_tokens_override = None;
 
                 // Check max_turns limit BEFORE incrementing (TypeScript checks nextTurnCount before increment)
                 let next_turn_count = self.turn_count + 1;
@@ -1766,11 +1840,69 @@ impl QueryEngine {
                 // Increment turn_count AFTER tool execution (matches TypeScript behavior)
                 self.turn_count = next_turn_count;
 
+                // Fire Stop hooks before finalizing (matches TypeScript handleStopHooks)
+                if !self.stop_hook_active {
+                    self.stop_hook_active = true;
+                    let stop_result = {
+                        let registry_clone = self.hook_registry.lock().unwrap().as_ref().cloned();
+                        if let Some(registry) = registry_clone {
+                            crate::hooks::run_stop_hooks(&registry, &self.config.cwd, &final_text).await
+                        } else {
+                            crate::hooks::StopHookResult::default()
+                        }
+                    };
+                    if !stop_result.blocking_errors.is_empty() {
+                        // Inject blocking errors as system messages and re-query
+                        for err_msg in stop_result.blocking_errors {
+                            self.messages.push(crate::types::Message {
+                                role: crate::types::MessageRole::System,
+                                content: err_msg,
+                                ..Default::default()
+                            });
+                        }
+                        if let Some(ref cb) = self.config.on_event {
+                            cb(AgentEvent::Thinking {
+                                turn: self.turn_count + 1,
+                            });
+                        }
+                        continue;
+                    }
+                    if stop_result.prevent_continuation {
+                        return Ok((final_text, crate::types::ExitReason::Completed));
+                    }
+                }
+
                 // Emit Thinking event for next turn
                 if let Some(ref cb) = self.config.on_event {
                     cb(AgentEvent::Thinking {
                         turn: self.turn_count + 1,
                     });
+                }
+
+                // Check token budget (TOKEN_BUDGET feature)
+                // When a token budget is set, we continue the loop with a nudge message
+                // until we reach 90% of the budget or hit diminishing returns.
+                let token_budget = self.config.token_budget;
+                let agent_id = self.config.agent_id.clone();
+                match crate::token_budget::check_token_budget(
+                    &mut self.budget_tracker,
+                    agent_id.as_deref(),
+                    token_budget,
+                    self.turn_tokens,
+                ) {
+                    crate::token_budget::TokenBudgetDecision::Continue { nudge_message } => {
+                        // Inject nudge as synthetic user message and re-query
+                        self.messages.push(crate::types::Message {
+                            role: crate::types::MessageRole::User,
+                            content: nudge_message,
+                            ..Default::default()
+                        });
+                        self.transition = Some("token_budget_continuation".to_string());
+                        continue;
+                    }
+                    crate::token_budget::TokenBudgetDecision::Stop { .. } => {
+                        // Normal exit path
+                    }
                 }
 
                 // Return the final text (already processed above)
@@ -1816,29 +1948,41 @@ impl QueryEngine {
             // Wrap in Arc so it can be cloned for concurrent execution
             let tool_executors = Arc::new(self.tool_executors.lock().unwrap().clone());
             let tool_render_fns = Arc::new(self.tool_render_fns.lock().unwrap().clone());
+            let tool_backfill_fns = Arc::new(self.tool_backfill_fns.lock().unwrap().clone());
             let tools = self.config.tools.clone();
             let can_use_tool = self.config.can_use_tool.clone();
             let cwd = self.config.cwd.clone();
             let on_event = self.config.on_event.clone();
             let abort_signal = self.abort_controller.signal().clone();
+            let hook_registry = self.hook_registry.clone();
 
             let executor = move |name: String, args: serde_json::Value, tool_call_id: String| {
                 let tool_executors = tool_executors.clone();
                 let tool_render_fns = tool_render_fns.clone();
+                let tool_backfill_fns = tool_backfill_fns.clone();
                 let tools = tools.clone();
                 let can_use_tool = can_use_tool.clone();
                 let cwd = cwd.clone();
                 let on_event = on_event.clone();
                 let abort_signal = abort_signal.clone();
+                let hook_registry = hook_registry.clone();
                 async move {
                     // The actual tool execution is now handled by QueryEngine::execute_tool
                     // but since we are in a closure passed to orchestration::run_tools,
                     // we have to implement the logic here or change orchestration.
                     // To keep it consistent with the new execute_tool, we'll mimic its logic.
 
-                    // Emit ToolStart event with render metadata
+                    // Backfill observable input (TS: toolExecution.ts:783-792)
+                    // Clone args, call backfill on clone, use backfilled for hooks/events
+                    // Original args passed to executor_fn (preserves prompt cache)
+                    let mut backfilled_args = args.clone();
+                    if let Some(backfill_fn) = tool_backfill_fns.get(&name) {
+                        backfill_fn(&mut backfilled_args);
+                    }
+
+                    // Emit ToolStart event with render metadata (use backfilled input for observers)
                     if let Some(ref cb) = on_event {
-                        let meta_input = Some(&args);
+                        let meta_input = Some(&backfilled_args);
                         let metadata = tool_render_fns.get(&name).map(|fns| ToolRenderMetadata {
                             user_facing_name: (Arc::clone(&fns.user_facing_name))(meta_input),
                             tool_use_summary: fns
@@ -1854,7 +1998,7 @@ impl QueryEngine {
                             cb(AgentEvent::ToolStart {
                                 tool_name: name.clone(),
                                 tool_call_id: tool_call_id.clone(),
-                                input: args.clone(),
+                                input: backfilled_args.clone(),
                                 display_name: Some(meta.user_facing_name.clone()),
                                 summary: meta.tool_use_summary.clone(),
                                 activity_description: meta.activity_description.clone(),
@@ -1863,7 +2007,7 @@ impl QueryEngine {
                             cb(AgentEvent::ToolStart {
                                 tool_name: name.clone(),
                                 tool_call_id: tool_call_id.clone(),
-                                input: args.clone(),
+                                input: backfilled_args.clone(),
                                 display_name: None,
                                 summary: None,
                                 activity_description: None,
@@ -1874,6 +2018,8 @@ impl QueryEngine {
                     // We don't have access to `self` here, so we can't call self.execute_tool.
                     // However, the hooks and permissions are part of the config/registry.
                     // For now, let's maintain the logic but ensure we use tool_call_id.
+
+                    let cwd_clone = cwd.clone();
 
                     let context = crate::types::ToolContext {
                         cwd,
@@ -1897,19 +2043,58 @@ impl QueryEngine {
                                 .and_then(|f| f(meta_input)),
                         });
 
-                        // Pre-tool permission check
+                        // Pre-tool permission check (3-way: Allow/Deny/Ask) - use backfilled input
                         if let Some(can_use_fn) = can_use_tool {
                             if let Some(tool_def) = tools.iter().find(|t| &t.name == &name) {
-                                if !can_use_fn(tool_def.clone(), args.clone()) {
-                                    return Err(crate::error::AgentError::Tool(format!(
-                                        "Tool '{}' permission denied",
-                                        name
-                                    )));
+                                match can_use_fn(tool_def.clone(), backfilled_args.clone()) {
+                                    crate::permission::PermissionResult::Allow(_)
+                                    | crate::permission::PermissionResult::Passthrough { .. } => {}
+                                    crate::permission::PermissionResult::Deny(d) => {
+                                        return Err(crate::error::AgentError::Tool(format!(
+                                            "Tool '{}' permission denied: {}",
+                                            name, d.message
+                                        )));
+                                    }
+                                    crate::permission::PermissionResult::Ask(a) => {
+                                        return Err(crate::error::AgentError::Tool(format!(
+                                            "Tool '{}' requires user confirmation (Ask not supported in SDK): {}",
+                                            name, a.message
+                                        )));
+                                    }
                                 }
                             }
                         }
 
+                        // PreToolUse hooks (fire before execution, can block) - use backfilled input
+                        {
+                            let registry_clone = hook_registry.lock().unwrap().as_ref().cloned();
+                            if let Some(registry) = registry_clone {
+                                if let Err(e) =
+                                    crate::hooks::run_pre_tool_use_hooks(&registry, &name, &backfilled_args, &tool_call_id, &cwd_clone)
+                                        .await
+                                {
+                                    return Err(e);
+                                }
+                            }
+                        }
+
+                        // Execute with original args (preserves prompt cache, TS: callInput)
                         let result = executor_fn(args, &context).await;
+
+                        // PostToolUse / PostToolUseFailure hooks
+                        {
+                            let registry_clone = hook_registry.lock().unwrap().as_ref().cloned();
+                            if let Some(registry) = registry_clone {
+                                match &result {
+                                    Ok(tool_result) => {
+                                        let _ = crate::hooks::run_post_tool_use_hooks(&registry, &name, tool_result, &tool_call_id, &cwd_clone).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = crate::hooks::run_post_tool_use_failure_hooks(&registry, &name, &e.to_string(), &tool_call_id, &cwd_clone).await;
+                                    }
+                                }
+                            }
+                        }
 
                         // Emit ToolComplete or ToolError event with render hooks
                         if let Some(ref cb) = on_event {
@@ -2003,6 +2188,11 @@ impl QueryEngine {
                     msg.content = truncated_content;
                     self.messages.push(msg);
                 }
+            }
+
+            // Enforce aggregate tool result budget after tool results are added
+            if let Some(ref mut state) = self.content_replacement_state {
+                crate::services::compact::apply_tool_result_budget(&mut self.messages, Some(state));
             }
 
             // After tool execution, check max_turns BEFORE incrementing

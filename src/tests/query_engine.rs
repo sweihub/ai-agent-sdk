@@ -26,6 +26,8 @@ async fn test_engine_creation() {
         on_event: None,
         thinking: None,
         abort_controller: None,
+        token_budget: None,
+        agent_id: None,
     });
     assert_eq!(engine.get_turn_count(), 0);
 }
@@ -49,6 +51,8 @@ async fn test_engine_submit_message() {
         on_event: None,
         thinking: None,
         abort_controller: None,
+        token_budget: None,
+        agent_id: None,
     });
 
     let result = engine.submit_message("Hello").await;
@@ -445,6 +449,8 @@ async fn test_engine_with_tools_config() {
         on_event: None,
         thinking: None,
         abort_controller: None,
+        token_budget: None,
+        agent_id: None,
     });
 
     // Verify tools are stored in config
@@ -471,6 +477,8 @@ async fn test_engine_system_prompt_includes_tool_guidance() {
         on_event: None,
         thinking: None,
         abort_controller: None,
+        token_budget: None,
+        agent_id: None,
     });
 
     // Verify system prompt is set
@@ -581,6 +589,8 @@ async fn test_engine_message_history_with_tool_calls() {
         on_event: None,
         thinking: None,
         abort_controller: None,
+        token_budget: None,
+        agent_id: None,
     });
 
     // Add user message
@@ -657,6 +667,7 @@ fn make_deferred_tool(name: &str, should_defer: bool, is_mcp: bool) -> ToolDefin
         search_hint: Some(format!("{} capability", name.to_lowercase())),
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     };
     t
 }

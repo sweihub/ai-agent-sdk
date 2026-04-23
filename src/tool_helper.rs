@@ -133,6 +133,7 @@ pub fn sdk_tool_to_tool_definition(sdk_tool: SdkToolDefinition) -> ToolDefinitio
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }
 }
 

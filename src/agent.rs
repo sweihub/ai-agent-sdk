@@ -5,6 +5,8 @@ use crate::query_engine::{QueryEngine, QueryEngineConfig};
 use crate::stream::{CancelGuard, EventSubscriber};
 use crate::tools::ask::AskUserQuestionTool;
 use crate::tools::bash::BashTool;
+use crate::tools::brief::BriefTool;
+use crate::tools::synthetic_output::SyntheticOutputTool;
 use crate::tools::config::ConfigTool;
 use crate::tools::cron::{CronCreateTool, CronDeleteTool, CronListTool};
 use crate::tools::edit::FileEditTool;
@@ -22,7 +24,10 @@ use crate::tools::search::ToolSearchTool;
 use crate::tools::send_user_file::SendUserFileTool;
 use crate::tools::skill::SkillTool;
 use crate::tools::skill::register_skills_from_dir;
+use crate::skills::loader::load_all_skills;
+use crate::utils::hooks::register_hooks_from_skills;
 use crate::tools::sleep_tool::SleepTool;
+use crate::tools::task_output::TaskOutputTool;
 use crate::tools::tasks::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool};
 use crate::tools::team::{SendMessageTool, TeamCreateTool, TeamDeleteTool};
 use crate::tools::todo::TodoWriteTool;
@@ -31,6 +36,7 @@ use crate::tools::web_fetch::WebFetchTool;
 use crate::tools::web_search::WebSearchTool;
 use crate::tools::worktree::{EnterWorktreeTool, ExitWorktreeTool};
 use crate::tools::write::FileWriteTool as WriteTool;
+use crate::permission::{PermissionResult, PermissionAllowDecision, PermissionDenyDecision, PermissionDecisionReason};
 use crate::types::AgentEvent;
 use crate::types::*;
 use std::sync::Arc;
@@ -56,6 +62,19 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
         })
     };
     engine.register_tool("Bash".to_string(), bash_executor);
+
+    // FileRead tool - register backfill function (expand file_path for observers)
+    engine.register_tool_backfill(
+        "FileRead".to_string(),
+        |input: &mut serde_json::Value| {
+            if let Some(fp) = input.get("file_path").and_then(|v| v.as_str()) {
+                let expanded = crate::utils::path::expand_path(fp);
+                if let Some(obj) = input.as_object_mut() {
+                    obj.insert("file_path".to_string(), serde_json::json!(expanded));
+                }
+            }
+        },
+    );
 
     // FileRead tool
     let read_executor = move |input: serde_json::Value,
@@ -90,6 +109,18 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
         })
     };
     engine.register_tool("FileWrite".to_string(), write_executor);
+    // FileWrite tool - register backfill function (expand file_path for observers)
+    engine.register_tool_backfill(
+        "FileWrite".to_string(),
+        |input: &mut serde_json::Value| {
+            if let Some(fp) = input.get("file_path").and_then(|v| v.as_str()) {
+                let expanded = crate::utils::path::expand_path(fp);
+                if let Some(obj) = input.as_object_mut() {
+                    obj.insert("file_path".to_string(), serde_json::json!(expanded));
+                }
+            }
+        },
+    );
 
     // Glob tool
     let glob_executor = move |input: serde_json::Value,
@@ -156,6 +187,18 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
         })),
     };
     engine.register_tool_with_render("FileEdit".to_string(), edit_executor, render_fns);
+    // FileEdit tool - register backfill function (expand file_path for observers)
+    engine.register_tool_backfill(
+        "FileEdit".to_string(),
+        |input: &mut serde_json::Value| {
+            if let Some(fp) = input.get("file_path").and_then(|v| v.as_str()) {
+                let expanded = crate::utils::path::expand_path(fp);
+                if let Some(obj) = input.as_object_mut() {
+                    obj.insert("file_path".to_string(), serde_json::json!(expanded));
+                }
+            }
+        },
+    );
 
     // Skill tool - register skills from examples/skills directory
     use std::path::Path;
@@ -346,6 +389,23 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
         })
     };
     engine.register_tool("TaskGet".to_string(), task_get_executor);
+
+    // TaskOutput tool
+    let task_output_executor = move |input: serde_json::Value,
+                                     ctx: &ToolContext|
+          -> BoxFuture<Result<ToolResult, AgentError>> {
+        let tool_clone = TaskOutputTool::new();
+        let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
+        Box::pin(async move {
+            let ctx2 = ToolContext {
+                cwd,
+                abort_signal: abort_signal.clone(),
+            };
+            tool_clone.execute(input, &ctx2).await
+        })
+    };
+    engine.register_tool("TaskOutput".to_string(), task_output_executor);
 
     // TodoWrite tool
     let todo_write_executor = move |input: serde_json::Value,
@@ -675,6 +735,40 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
         "ReadMcpResourceTool".to_string(),
         read_mcp_resource_executor,
     );
+
+    // BriefTool (SendUserMessage) — primary visible output channel
+    let brief_executor = move |input: serde_json::Value,
+                               ctx: &ToolContext|
+          -> BoxFuture<Result<ToolResult, AgentError>> {
+        let tool_clone = BriefTool::new();
+        let cwd = ctx.cwd.clone();
+        let abort_signal = ctx.abort_signal.clone();
+        Box::pin(async move {
+            let ctx2 = ToolContext {
+                cwd,
+                abort_signal: abort_signal.clone(),
+            };
+            tool_clone.execute(input, &ctx2).await
+        })
+    };
+    engine.register_tool("SendUserMessage".to_string(), brief_executor);
+
+    // SyntheticOutputTool (StructuredOutput) — structured output enforcement
+    let synthetic_output_executor =
+        move |input: serde_json::Value, ctx: &ToolContext|
+          -> BoxFuture<Result<ToolResult, AgentError>> {
+            let tool_clone = SyntheticOutputTool::new();
+            let cwd = ctx.cwd.clone();
+            let abort_signal = ctx.abort_signal.clone();
+            Box::pin(async move {
+                let ctx2 = ToolContext {
+                    cwd,
+                    abort_signal: abort_signal.clone(),
+                };
+                tool_clone.execute(input, &ctx2).await
+            })
+        };
+    engine.register_tool("StructuredOutput".to_string(), synthetic_output_executor);
 }
 
 /// Subscriber info for fan-out event delivery
@@ -899,17 +993,23 @@ impl Agent {
             let disallowed_tools = inner.disallowed_tools.clone();
             let tool_pool = inner.tool_pool.clone();
             let can_use_tool: Option<
-                std::sync::Arc<dyn Fn(ToolDefinition, serde_json::Value) -> bool + Send + Sync>,
+                std::sync::Arc<dyn Fn(ToolDefinition, serde_json::Value) -> PermissionResult + Send + Sync>,
             > = if !allowed_tools.is_empty() || !disallowed_tools.is_empty() {
                 Some(std::sync::Arc::new(
                     move |tool_def: ToolDefinition, _input: serde_json::Value| {
                         if !allowed_tools.is_empty() && !allowed_tools.contains(&tool_def.name) {
-                            return false;
+                            return PermissionResult::Deny(PermissionDenyDecision::new(
+                                &format!("Tool '{}' is not in the allowed tools list", tool_def.name),
+                                PermissionDecisionReason::Other { reason: "allowed tools filter".to_string() },
+                            ));
                         }
                         if disallowed_tools.contains(&tool_def.name) {
-                            return false;
+                            return PermissionResult::Deny(PermissionDenyDecision::new(
+                                &format!("Tool '{}' is in the disallowed tools list", tool_def.name),
+                                PermissionDecisionReason::Other { reason: "disallowed tools filter".to_string() },
+                            ));
                         }
-                        true
+                        PermissionResult::Allow(PermissionAllowDecision::default())
                     },
                 ))
             } else {
@@ -932,9 +1032,19 @@ impl Agent {
                 on_event: inner.on_event.clone(),
                 thinking: inner.thinking.clone(),
                 abort_controller: Some(inner.abort_controller.clone()),
+                token_budget: None,
+                agent_id: None,
             };
             let mut engine = QueryEngine::new(config);
             register_all_tool_executors(&mut engine);
+
+            // Register hooks from loaded skills
+            let session_id = inner.session_id.clone();
+            if let Ok(skills) = load_all_skills(&cwd) {
+                let _set_app_state = |_: &dyn Fn(&mut serde_json::Value)| {};
+                register_hooks_from_skills(&_set_app_state, &session_id, &skills);
+            }
+
             inner.engine = Some(Arc::new(TokioMutex::new(engine)));
         }
     }
@@ -1039,6 +1149,8 @@ impl Agent {
             on_event: None,
             thinking: None,
             abort_controller: Some(inner.abort_controller.clone()),
+            token_budget: None,
+            agent_id: None,
         });
 
         // Register all tool executors (including Bash, Read, Write, etc.)
@@ -1059,8 +1171,8 @@ impl Agent {
 
             Box::pin(async move {
                 // Extract ALL parameters from input
-                let description = input["description"].as_str().unwrap_or("subagent");
-                let subagent_prompt = input["prompt"].as_str().unwrap_or("");
+                let description = input["description"].as_str().unwrap_or("subagent").to_string();
+                let subagent_prompt = input["prompt"].as_str().unwrap_or("").to_string();
                 let subagent_model = input["model"]
                     .as_str()
                     .map(|s| s.to_string())
@@ -1076,8 +1188,8 @@ impl Agent {
                     .or_else(|| input["subagentType"].as_str())
                     .map(|s| s.to_string());
 
-                // NEW: Extract run_in_background (ignored for now, async not supported)
-                let _run_in_background = input["run_in_background"]
+                // Extract run_in_background — spawns the subagent in a tokio task
+                let run_in_background = input["run_in_background"]
                     .as_bool()
                     .or_else(|| input["runInBackground"].as_bool())
                     .unwrap_or(false);
@@ -1105,7 +1217,7 @@ impl Agent {
 
                 // Build system prompt for subagent
                 let system_prompt =
-                    build_agent_system_prompt(description, subagent_type.as_deref());
+                    build_agent_system_prompt(&description, subagent_type.as_deref());
 
                 // Create sub-agent engine with proper system prompt
                 let mut sub_engine = QueryEngine::new(QueryEngineConfig {
@@ -1113,7 +1225,7 @@ impl Agent {
                     model: subagent_model.to_string(),
                     api_key,
                     base_url,
-                    tools: vec![],
+                    tools: crate::tools::get_all_base_tools(),
                     system_prompt: Some(system_prompt),
                     max_turns,
                     max_budget_usd: None,
@@ -1125,31 +1237,116 @@ impl Agent {
                     on_event: None,
                     thinking: None,
                     abort_controller: Some(subagent_abort.clone()),
+                    token_budget: None,
+                    agent_id: agent_name.clone().or_else(|| Some(description.to_string())),
                 });
+                register_all_tool_executors(&mut sub_engine);
 
-                match sub_engine.submit_message(subagent_prompt).await {
-                    Ok((result_text, _)) => {
-                        let mut content = format!("[Subagent: {}]", description);
-                        if let Some(ref name) = agent_name {
-                            content = format!("[Subagent: {} ({})]", description, name);
+                // Initialize agent MCP servers — merges MCP tools into subagent engine
+                let mcp_result = {
+                    let mcp_servers =
+                        crate::services::mcp::agent_mcp::parse_agent_mcp_servers(&input);
+                    if !mcp_servers.is_empty() {
+                        let result =
+                            crate::services::mcp::agent_mcp::initialize_agent_mcp_servers(
+                                &mcp_servers, None,
+                            )
+                            .await;
+
+                        // Merge MCP tool definitions into sub_engine's tool list
+                        let mcp_tool_count = result.tools.len();
+                        let mcp_conn_count = result.connections.len();
+                        if mcp_tool_count > 0 {
+                            for mcp_tool in &result.tools {
+                                sub_engine
+                                    .config
+                                    .tools
+                                    .push(mcp_tool.clone());
+
+                                // Register MCP tool executor via registry
+                                let mcp_registry =
+                                    crate::services::mcp::tool_executor::McpToolRegistry::new();
+                                let executor = crate::services::mcp::tool_executor::
+                                    create_named_mcp_executor(
+                                    mcp_registry,
+                                    &mcp_tool.name,
+                                );
+                                sub_engine.register_tool(mcp_tool.name.clone(), executor);
+                            }
+
+                            log::info!(
+                                "[Subagent: {}] Added {} MCP tools from {} server(s)",
+                                description,
+                                mcp_tool_count,
+                                mcp_conn_count
+                            );
                         }
-                        content = format!("{}\n\n{}", content, result_text);
-                        Ok(ToolResult {
-                            result_type: "text".to_string(),
-                            tool_use_id: "agent_tool".to_string(),
-                            content,
-                            is_error: Some(false),
-                            was_persisted: None,
-                        })
+
+                        Some(result)
+                    } else {
+                        None
                     }
-                    Err(e) => Ok(ToolResult {
+                };
+
+                // Execute subagent task
+                let result: Result<ToolResult, AgentError> = if run_in_background {
+                    // Spawn subagent in a tokio task and return immediately with a task ID
+                    let task_id = uuid::Uuid::new_v4().to_string();
+                    let task_id_clone = task_id.clone();
+                    let prompt = subagent_prompt.clone();
+                    let desc = description.clone();
+                    tokio::spawn(async move {
+                        match sub_engine.submit_message(&prompt).await {
+                            Ok((result_text, _)) => {
+                                log::info!("[BackgroundAgent:{task_id}] {desc}: {result_text}");
+                            }
+                            Err(e) => {
+                                log::error!("[BackgroundAgent:{task_id}] {desc}: {e}");
+                            }
+                        }
+                    });
+                    Ok(ToolResult {
                         result_type: "text".to_string(),
                         tool_use_id: "agent_tool".to_string(),
-                        content: format!("[Subagent: {}] Error: {}", description, e),
-                        is_error: Some(true),
+                        content: format!(
+                            "[Background subagent '{}'] Task {} started. Use TaskOutput(task_id=\"{}\") to retrieve results.",
+                            description, task_id_clone, task_id_clone
+                        ),
+                        is_error: Some(false),
                         was_persisted: None,
-                    }),
+                    })
+                } else {
+                    match sub_engine.submit_message(&subagent_prompt).await {
+                        Ok((result_text, _)) => {
+                            let mut content = format!("[Subagent: {}]", description);
+                            if let Some(ref name) = agent_name {
+                                content = format!("[Subagent: {} ({})]", description, name);
+                            }
+                            content = format!("{}\n\n{}", content, result_text);
+                            Ok(ToolResult {
+                                result_type: "text".to_string(),
+                                tool_use_id: "agent_tool".to_string(),
+                                content,
+                                is_error: Some(false),
+                                was_persisted: None,
+                            })
+                        }
+                        Err(e) => Ok(ToolResult {
+                            result_type: "text".to_string(),
+                            tool_use_id: "agent_tool".to_string(),
+                            content: format!("[Subagent: {}] Error: {}", description, e),
+                            is_error: Some(true),
+                            was_persisted: None,
+                        }),
+                    }
+                };
+
+                // Cleanup MCP connections after subagent completion
+                if let Some(mcp_result) = mcp_result {
+                    (mcp_result.cleanup)();
                 }
+
+                result
             })
         };
 
@@ -1202,13 +1399,29 @@ impl Agent {
     }
 
     /// Select the tools to use: all base tools if tool_pool is empty, otherwise the tool pool.
+    /// Tools are sorted by name for prompt cache stability (matches TypeScript assembleToolPool).
+    /// Applies deny rules to filter out disallowed MCP tools.
     fn select_tools(&self) -> Vec<ToolDefinition> {
         let inner = &*self.inner.lock().unwrap();
-        if inner.tool_pool.is_empty() {
+        let tools = if inner.tool_pool.is_empty() {
             crate::tools::get_all_base_tools()
         } else {
             inner.tool_pool.clone()
+        };
+        let disallowed_tools = inner.disallowed_tools.clone();
+
+        // Sort by name for prompt cache stability (built-in tools are already sorted)
+        let mut sorted = tools;
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        // Deduplicate by name (first occurrence wins)
+        let mut seen = std::collections::HashSet::new();
+        sorted.retain(|t| seen.insert(t.name.clone()));
+
+        // Apply deny rules (MCP server-prefix, wildcard, exact match)
+        if !disallowed_tools.is_empty() {
+            sorted = crate::tools::filter_tools_by_deny_rules(&sorted, &disallowed_tools);
         }
+        sorted
     }
 
     /// Main query method - handles the full agent loop including tool use,
@@ -1255,6 +1468,11 @@ impl Agent {
             let engine_base_url = eng.config.base_url.clone();
             let engine_cwd = eng.config.cwd.clone();
             let subagent_abort = abort_controller.clone();
+            // Additional values for fork subagent path
+            let engine_messages = eng.messages.clone();
+            let engine_user_context = eng.config.user_context.clone();
+            let engine_system_context = eng.config.system_context.clone();
+            let engine_thinking = eng.config.thinking.clone();
 
             let agent_tool_executor = move |input: serde_json::Value,
                                             _ctx: &ToolContext|
@@ -1267,10 +1485,14 @@ impl Agent {
                 let model = engine_model.clone();
                 let tool_pool = engine_tools.clone();
                 let subagent_abort = subagent_abort.clone();
+                let parent_messages = engine_messages.clone();
+                let parent_user_context = engine_user_context.clone();
+                let parent_system_context = engine_system_context.clone();
+                let parent_thinking = engine_thinking.clone();
 
                 Box::pin(async move {
-                    let description = input["description"].as_str().unwrap_or("subagent");
-                    let subagent_prompt = input["prompt"].as_str().unwrap_or("");
+                    let description = input["description"].as_str().unwrap_or("subagent").to_string();
+                    let subagent_prompt = input["prompt"].as_str().unwrap_or("").to_string();
                     let subagent_model = input["model"]
                         .as_str()
                         .map(|s| s.to_string())
@@ -1285,7 +1507,7 @@ impl Agent {
                         .or_else(|| input["subagentType"].as_str())
                         .map(|s| s.to_string());
 
-                    let _run_in_background = input["run_in_background"]
+                    let run_in_background = input["run_in_background"]
                         .as_bool()
                         .or_else(|| input["runInBackground"].as_bool())
                         .unwrap_or(false);
@@ -1306,8 +1528,16 @@ impl Agent {
 
                     let _isolation = input["isolation"].as_str().map(|s| s.to_string());
 
+                    // Fork subagent detection: when no subagent_type is specified AND fork is enabled
+                    let is_fork = subagent_type.is_none()
+                        && crate::tools::agent::prompt::is_fork_subagent_enabled()
+                        && !parent_messages.iter().any(|m| {
+                            m.role == crate::types::MessageRole::User
+                                && m.content.contains(crate::tools::agent::constants::FORK_BOILERPLATE_TAG)
+                        });
+
                     let system_prompt =
-                        build_agent_system_prompt(description, subagent_type.as_deref());
+                        build_agent_system_prompt(&description, subagent_type.as_deref());
 
                     let mut sub_engine = QueryEngine::new(QueryEngineConfig {
                         cwd: subagent_cwd,
@@ -1326,30 +1556,79 @@ impl Agent {
                         on_event: None,
                         thinking: None,
                         abort_controller: Some(subagent_abort.clone()),
+                        token_budget: None,
+                        agent_id: agent_name.clone().or_else(|| Some(description.to_string())),
                     });
+                    register_all_tool_executors(&mut sub_engine);
 
-                    match sub_engine.submit_message(subagent_prompt).await {
-                        Ok((result_text, _)) => {
-                            let mut content = format!("[Subagent: {}]", description);
-                            if let Some(ref name) = agent_name {
-                                content = format!("[Subagent: {} ({})]", description, name);
+                    // Fork subagent: configure cache-safe params and forked messages
+                    if is_fork {
+                        // Empty system prompt for prompt cache sharing with parent
+                        sub_engine.config.system_prompt = Some(String::new());
+                        // Inherit parent's context for cache sharing
+                        sub_engine.config.user_context = parent_user_context.clone();
+                        sub_engine.config.system_context = parent_system_context.clone();
+                        sub_engine.config.thinking = parent_thinking.clone();
+                        // Use fork agent definition's max_turns
+                        let fork_agent = crate::tools::agent::fork_subagent::fork_agent();
+                        sub_engine.config.max_turns = fork_agent.max_turns.unwrap_or(200) as u32;
+                        // Build forked messages for prompt cache sharing
+                        let forked_messages = crate::tools::agent::fork_subagent::build_forked_messages_from_sdk(
+                            &parent_messages,
+                            &subagent_prompt,
+                        );
+                        sub_engine.set_messages(forked_messages);
+                    }
+
+                    if run_in_background {
+                        let task_id = uuid::Uuid::new_v4().to_string();
+                        let task_id_display = task_id.clone();
+                        let prompt = subagent_prompt.clone();
+                        let desc = description.clone();
+                        tokio::spawn(async move {
+                            match sub_engine.submit_message(&prompt).await {
+                                Ok((result_text, _)) => {
+                                    log::info!("[BackgroundAgent:{task_id}] {desc}: {result_text}");
+                                }
+                                Err(e) => {
+                                    log::error!("[BackgroundAgent:{task_id}] {desc}: {e}");
+                                }
                             }
-                            content = format!("{}\n\n{}", content, result_text);
-                            Ok(ToolResult {
-                                result_type: "text".to_string(),
-                                tool_use_id: "agent_tool".to_string(),
-                                content,
-                                is_error: Some(false),
-                                was_persisted: None,
-                            })
-                        }
-                        Err(e) => Ok(ToolResult {
+                        });
+                        Ok(ToolResult {
                             result_type: "text".to_string(),
                             tool_use_id: "agent_tool".to_string(),
-                            content: format!("[Subagent: {}] Error: {}", description, e),
-                            is_error: Some(true),
+                            content: format!(
+                                "[Background subagent '{}'] Task {} started. Use TaskOutput(task_id=\"{}\") to retrieve results.",
+                                description, task_id_display, task_id_display
+                            ),
+                            is_error: Some(false),
                             was_persisted: None,
-                        }),
+                        })
+                    } else {
+                        match sub_engine.submit_message(&subagent_prompt).await {
+                            Ok((result_text, _)) => {
+                                let mut content = format!("[Subagent: {}]", description);
+                                if let Some(ref name) = agent_name {
+                                    content = format!("[Subagent: {} ({})]", description, name);
+                                }
+                                content = format!("{}\n\n{}", content, result_text);
+                                Ok(ToolResult {
+                                    result_type: "text".to_string(),
+                                    tool_use_id: "agent_tool".to_string(),
+                                    content,
+                                    is_error: Some(false),
+                                    was_persisted: None,
+                                })
+                            }
+                            Err(e) => Ok(ToolResult {
+                                result_type: "text".to_string(),
+                                tool_use_id: "agent_tool".to_string(),
+                                content: format!("[Subagent: {}] Error: {}", description, e),
+                                is_error: Some(true),
+                                was_persisted: None,
+                            }),
+                        }
                     }
                 })
             };

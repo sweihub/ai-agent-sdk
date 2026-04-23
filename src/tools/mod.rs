@@ -1,5 +1,7 @@
 pub mod agent;
+pub mod assemble;
 pub mod ask;
+pub mod brief;
 pub mod bash;
 pub mod config;
 pub mod config_tools;
@@ -7,6 +9,7 @@ pub mod cron;
 pub mod deferred_tools;
 pub mod edit;
 pub mod glob;
+pub mod discover_skills;
 pub mod grep;
 pub mod lsp;
 pub mod mcp_resource_reader;
@@ -24,11 +27,15 @@ pub mod search;
 pub mod send_user_file;
 pub mod skill;
 pub mod sleep_tool;
+pub mod snip;
+pub mod task_output;
 pub mod task_stop;
+pub mod terminal_capture;
 pub mod tasks;
 pub mod team;
 pub mod todo;
 pub mod types;
+pub mod synthetic_output;
 pub mod web_browser;
 pub mod web_fetch;
 pub mod web_search;
@@ -38,6 +45,7 @@ pub mod write;
 pub use types::{
     Tool, ToolDefinition, ToolFuture, ToolInputSchema, filter_tools, get_all_base_tools,
 };
+pub use assemble::{assemble_tool_pool, filter_tools_by_deny_rules};
 
 #[cfg(test)]
 mod tests {
@@ -46,8 +54,8 @@ mod tests {
     #[test]
     fn test_get_all_base_tools_returns_all_tools() {
         let tools = get_all_base_tools();
-        // Should have 37 built-in tools (33 original + LSP, RemoteTrigger, ListMcpResourcesTool, ReadMcpResourceTool)
-        assert_eq!(tools.len(), 37);
+        // Should have 40 built-in tools (33 original + LSP, RemoteTrigger, ListMcpResourcesTool, ReadMcpResourceTool, TaskOutput, SendUserMessage, StructuredOutput)
+        assert_eq!(tools.len(), 40);
     }
 
     #[test]
@@ -138,6 +146,7 @@ mod tests {
                 search_hint: None,
                 aliases: None,
                 user_facing_name: None,
+                interrupt_behavior: None,
             },
             ToolDefinition {
                 name: "FileRead".to_string(),
@@ -154,6 +163,7 @@ mod tests {
                 search_hint: None,
                 aliases: None,
                 user_facing_name: None,
+                interrupt_behavior: None,
             },
         ];
         let filtered = filter_tools(tools, Some(vec!["Bash".to_string()]), None);
@@ -179,6 +189,7 @@ mod tests {
                 search_hint: None,
                 aliases: None,
                 user_facing_name: None,
+                interrupt_behavior: None,
             },
             ToolDefinition {
                 name: "FileRead".to_string(),
@@ -195,6 +206,7 @@ mod tests {
                 search_hint: None,
                 aliases: None,
                 user_facing_name: None,
+                interrupt_behavior: None,
             },
         ];
         let filtered = filter_tools(tools, None, Some(vec!["Bash".to_string()]));

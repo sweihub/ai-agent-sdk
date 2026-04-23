@@ -230,6 +230,7 @@ mod tests {
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }];
         let messages = vec![];
 

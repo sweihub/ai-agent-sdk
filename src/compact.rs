@@ -6,7 +6,8 @@
 
 use crate::constants::env::{ai, ai_code};
 pub use crate::services::token_estimation::{
-    rough_token_count_estimation, rough_token_count_estimation_for_message,
+    rough_token_count_estimation, rough_token_count_estimation_for_content,
+    rough_token_count_estimation_for_message,
 };
 use crate::types::*;
 
@@ -634,4 +635,332 @@ pub mod compact_errors {
     pub const ERROR_MESSAGE_NOT_ENOUGH_MESSAGES: &str = "Not enough messages to compact";
     /// Error message for user abort
     pub const ERROR_MESSAGE_USER_ABORT: &str = "User aborted compaction";
+}
+
+/// Post-compact restore state — tracks recently accessed files for restoration
+#[derive(Debug, Clone, Default)]
+pub struct FileReadState {
+    /// Maps file path → (content, access order index)
+    entries: std::collections::HashMap<String, (String, u64)>,
+    /// Monotonic counter for recency tracking
+    counter: u64,
+}
+
+impl FileReadState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a file read. More recent reads get higher priority for restore.
+    pub fn record(&mut self, path: String, content: String) {
+        self.counter += 1;
+        self.entries.insert(path, (content, self.counter));
+    }
+
+    /// Get the most recently accessed files, limited to max_files.
+    /// Skips files whose paths are already in preserved_read_paths.
+    pub fn recent_files(
+        &self,
+        max_files: usize,
+        preserved_read_paths: &std::collections::HashSet<String>,
+    ) -> Vec<(String, String)> {
+        let mut entries: Vec<(&String, &(String, u64))> = self.entries.iter().collect();
+        // Sort by recency (highest counter = most recent)
+        entries.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        entries
+            .into_iter()
+            .filter_map(|(path, (content, _))| {
+                if preserved_read_paths.contains(path.as_str()) {
+                    None
+                } else if should_exclude_from_restore(path) {
+                    None
+                } else {
+                    Some((path.clone(), content.clone()))
+                }
+            })
+            .take(max_files)
+            .collect()
+    }
+}
+
+/// Paths excluded from post-compact restore (plan files, memory files, CLAUDE.md variants)
+fn should_exclude_from_restore(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    // Exclude AI.md / CLAUDE.md variants
+    if lower.ends_with("ai.md") || lower.ends_with("claude.md") {
+        return true;
+    }
+    // Exclude memory files
+    if lower.contains(".ai/memory/") || lower.contains(".claude/memory/") {
+        return true;
+    }
+    // Exclude plan files
+    if lower.contains("/plans/") {
+        return true;
+    }
+    false
+}
+
+/// Collect file paths from Read tool results in preserved messages.
+/// Returns paths that are already visible and don't need restoration.
+pub fn collect_read_tool_file_paths(messages: &[Message]) -> std::collections::HashSet<String> {
+    let mut paths = std::collections::HashSet::new();
+    for msg in messages {
+        if msg.role != MessageRole::Assistant {
+            continue;
+        }
+        // Check if this is a Read tool call
+        if let Some(ref calls) = msg.tool_calls {
+            for call in calls {
+                if call.name == "Read" {
+                    if let Some(path) = call.arguments.get("file_path").and_then(|p| p.as_str()) {
+                        paths.insert(path.to_string());
+                    }
+                }
+            }
+        }
+    }
+    paths
+}
+
+/// SKILL_TRUNCATION_MARKER appended when a skill is truncated for post-compact restore.
+pub const SKILL_TRUNCATION_MARKER: &str =
+    "\n\n[... skill content truncated for compaction; use Read on the skill path if you need the full text]";
+
+/// Truncate content to roughly max_tokens, keeping the head.
+/// rough_token_count_estimation uses ~4 chars/token, so char budget = max_tokens * 4.
+pub fn truncate_to_tokens(content: &str, max_tokens: u32) -> String {
+    if rough_token_count_estimation_for_content(content) <= max_tokens as usize {
+        return content.to_string();
+    }
+    let char_budget = (max_tokens as usize).saturating_sub(SKILL_TRUNCATION_MARKER.len())
+        * 4
+        .min(content.len());
+    format!("{}{}", &content[..char_budget], SKILL_TRUNCATION_MARKER)
+}
+
+/// Post-compact file restore result
+pub struct PostCompactRestore {
+    /// Attachment messages for recently read files
+    pub file_attachments: Vec<Message>,
+    /// Attachment messages for invoked skills
+    pub skill_attachments: Vec<Message>,
+}
+
+/// Create post-compact file restore attachments.
+///
+/// Reads the most recently accessed files that fit within the token budget
+/// and returns them as attachment messages to re-inject after compaction.
+pub fn create_post_compact_file_attachments(
+    file_state: &FileReadState,
+    preserved_messages: &[Message],
+    max_files: usize,
+) -> Vec<Message> {
+    let preserved_paths = collect_read_tool_file_paths(preserved_messages);
+    let recent = file_state.recent_files(max_files, &preserved_paths);
+
+    let mut attachments = Vec::new();
+    let mut used_tokens: usize = 0;
+
+    for (path, content) in recent {
+        let truncated = truncate_to_tokens(&content, POST_COMPACT_MAX_TOKENS_PER_FILE);
+        let attachment = create_file_restore_attachment(&path, &truncated);
+        let tokens = rough_token_count_estimation_for_content(
+            &serde_json::to_string(&attachment).unwrap_or_default(),
+        );
+        if used_tokens + tokens <= POST_COMPACT_TOKEN_BUDGET as usize {
+            used_tokens += tokens;
+            attachments.push(attachment);
+        }
+    }
+    attachments
+}
+
+/// Create a single file restore attachment message
+fn create_file_restore_attachment(path: &str, content: &str) -> Message {
+    Message {
+        role: MessageRole::User,
+        content: format!(
+            "<post-compact-file-restore>\nFile: {}\n```\n{}\n```\n</post-compact-file-restore>",
+            path, content
+        ),
+        attachments: None,
+        tool_call_id: None,
+        tool_calls: None,
+        is_error: None,
+        is_meta: Some(true),
+    }
+}
+
+/// Create post-compact skill restore attachments.
+///
+/// Takes a list of (skill_name, skill_content) pairs and creates attachment
+/// messages within the skills token budget.
+pub fn create_post_compact_skill_attachments(
+    skills: &[(String, String)],
+) -> Vec<Message> {
+    let mut attachments = Vec::new();
+    let mut used_tokens: usize = 0;
+
+    for (name, content) in skills {
+        let truncated = truncate_to_tokens(content, POST_COMPACT_MAX_TOKENS_PER_SKILL);
+        let attachment = create_skill_restore_attachment(name, &truncated);
+        let tokens = rough_token_count_estimation_for_content(
+            &serde_json::to_string(&attachment).unwrap_or_default(),
+        );
+        if used_tokens + tokens <= POST_COMPACT_SKILLS_TOKEN_BUDGET as usize {
+            used_tokens += tokens;
+            attachments.push(attachment);
+        }
+    }
+    attachments
+}
+
+/// Create a single skill restore attachment message
+fn create_skill_restore_attachment(name: &str, content: &str) -> Message {
+    Message {
+        role: MessageRole::User,
+        content: format!(
+            "<post-compact-skill-restore>\nSkill: {}\n```\n{}\n```\n</post-compact-skill-restore>",
+            name, content
+        ),
+        attachments: None,
+        tool_call_id: None,
+        tool_calls: None,
+        is_error: None,
+        is_meta: Some(true),
+    }
+}
+
+#[cfg(test)]
+mod post_compact_tests {
+    use super::*;
+
+    #[test]
+    fn test_file_read_state_records_and_retrieves() {
+        let mut state = FileReadState::new();
+        state.record("/a.txt".to_string(), "content a".to_string());
+        state.record("/b.txt".to_string(), "content b".to_string());
+        let recent = state.recent_files(1, &std::collections::HashSet::new());
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].0, "/b.txt"); // most recent
+    }
+
+    #[test]
+    fn test_file_read_state_skips_preserved() {
+        let mut state = FileReadState::new();
+        state.record("/a.txt".to_string(), "content a".to_string());
+        state.record("/b.txt".to_string(), "content b".to_string());
+        let mut preserved = std::collections::HashSet::new();
+        preserved.insert("/a.txt".to_string());
+        let recent = state.recent_files(5, &preserved);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].0, "/b.txt");
+    }
+
+    #[test]
+    fn test_should_exclude_from_restore() {
+        assert!(should_exclude_from_restore("/home/user/.ai/ai.md"));
+        assert!(should_exclude_from_restore("/home/user/.ai/memory/user.md"));
+        assert!(should_exclude_from_restore("/home/user/.claude/memory/feedback.md"));
+        assert!(should_exclude_from_restore("/home/user/.claude/plans/my-plan.md"));
+        assert!(!should_exclude_from_restore("/home/user/src/main.rs"));
+        assert!(!should_exclude_from_restore("/home/user/Cargo.toml"));
+    }
+
+    #[test]
+    fn test_truncate_to_tokens_no_truncation() {
+        let content = "short content";
+        assert_eq!(truncate_to_tokens(content, 100), "short content");
+    }
+
+    #[test]
+    fn test_truncate_to_tokens_truncates() {
+        let content = "a".repeat(10_000);
+        let truncated = truncate_to_tokens(&content, 10);
+        assert!(truncated.contains(SKILL_TRUNCATION_MARKER));
+        assert!(truncated.len() < content.len());
+    }
+
+    #[test]
+    fn test_collect_read_tool_file_paths() {
+        let messages = vec![Message {
+            role: MessageRole::Assistant,
+            content: "reading file".to_string(),
+            attachments: None,
+            tool_call_id: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "t1".to_string(),
+                r#type: "function".to_string(),
+                name: "Read".to_string(),
+                arguments: serde_json::json!({"file_path": "/foo/bar.txt"}),
+            }]),
+            is_error: None,
+            is_meta: None,
+        }];
+        let paths = collect_read_tool_file_paths(&messages);
+        assert!(paths.contains("/foo/bar.txt"));
+    }
+
+    #[test]
+    fn test_collect_read_tool_file_paths_skips_non_read() {
+        let messages = vec![Message {
+            role: MessageRole::Assistant,
+            content: "running bash".to_string(),
+            attachments: None,
+            tool_call_id: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "t1".to_string(),
+                r#type: "function".to_string(),
+                name: "Bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }]),
+            is_error: None,
+            is_meta: None,
+        }];
+        let paths = collect_read_tool_file_paths(&messages);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_create_post_compact_file_attachments() {
+        let mut state = FileReadState::new();
+        state.record("/a.txt".to_string(), "a".repeat(100).to_string());
+        state.record("/b.txt".to_string(), "b".repeat(100).to_string());
+        let attachments = create_post_compact_file_attachments(&state, &[], 5);
+        assert_eq!(attachments.len(), 2);
+        assert!(attachments[0].is_meta == Some(true));
+        assert!(attachments[0].content.contains("post-compact-file-restore"));
+    }
+
+    #[test]
+    fn test_create_post_compact_skill_attachments() {
+        let skills = vec![("my-skill".to_string(), "skill content here".to_string())];
+        let attachments = create_post_compact_skill_attachments(&skills);
+        assert_eq!(attachments.len(), 1);
+        assert!(attachments[0].content.contains("my-skill"));
+        assert!(attachments[0].content.contains("post-compact-skill-restore"));
+    }
+
+    #[test]
+    fn test_post_compact_restore_token_budget() {
+        let mut state = FileReadState::new();
+        // Create large files that exceed budget
+        for i in 0..20 {
+            state.record(
+                format!("/file_{}.txt", i),
+                "x".repeat(100_000), // Each file is large
+            );
+        }
+        let attachments = create_post_compact_file_attachments(&state, &[], 5);
+        // Should be limited by budget
+        assert!(!attachments.is_empty());
+        assert!(attachments.len() <= 5);
+        // Total tokens should be within budget
+        let total_tokens: usize = attachments
+            .iter()
+            .map(|a| rough_token_count_estimation_for_content(&serde_json::to_string(a).unwrap_or_default()))
+            .sum();
+        assert!(total_tokens <= POST_COMPACT_TOKEN_BUDGET as usize);
+    }
 }

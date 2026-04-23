@@ -125,6 +125,26 @@ where
         // Mark tool as in progress
         in_progress_ids.insert(tool_call_id.clone());
 
+        // Check abort signal before executing each tool (interruptBehavior: block default)
+        if current_context.abort_signal.is_aborted() {
+            let error_content =
+                "<tool_use_error>Tool execution aborted by user interrupt</tool_use_error>"
+                    .to_string();
+            updates.push(ToolMessageUpdate {
+                message: Some(Message {
+                    role: MessageRole::Tool,
+                    content: error_content,
+                    tool_call_id: Some(tool_call_id.clone()),
+                    is_error: Some(true),
+                    ..Default::default()
+                }),
+                new_context: Some(current_context.clone()),
+                context_modifier: None,
+            });
+            mark_tool_use_as_complete(&mut in_progress_ids, &tool_call_id);
+            continue;
+        }
+
         // Input validation (matches TS Zod schema validation)
         if let Err(validation_err) = validate_tool_input(&tool_name, &tool_args, &tools) {
             let error_content = format!(
@@ -232,8 +252,17 @@ where
             let tools = tools.clone();
             let project_dir = project_dir.clone();
             let session_id = session_id.clone();
+            let abort_signal = tool_context.abort_signal.clone();
 
             async move {
+                // Check abort signal before concurrent tool execution (all concurrent tools treated as cancel)
+                if abort_signal.is_aborted() {
+                    return (
+                        tool_call_id,
+                        Err(AgentError::Tool("Tool execution aborted by user interrupt".to_string())),
+                    );
+                }
+
                 // Input validation
                 if let Err(validation_err) = validate_tool_input(&tool_name, &tool_args, &tools) {
                     let error_content = format!(
@@ -396,6 +425,7 @@ mod tests {
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }
 
@@ -620,5 +650,84 @@ mod tests {
 
         assert!(!in_progress.contains("tool1"));
         assert!(in_progress.contains("tool2"));
+    }
+
+    #[tokio::test]
+    async fn test_run_tools_serially_aborted() {
+        use crate::utils::abort_controller::create_abort_controller_default;
+
+        let tool_calls = vec![ToolCall {
+            id: "1".to_string(),
+            r#type: "function".to_string(),
+            name: "test".to_string(),
+            arguments: serde_json::json!({}),
+        }];
+
+        let controller = create_abort_controller_default();
+        controller.abort(None); // Pre-abort
+        let abort_signal = controller.signal().clone();
+
+        let tool_context = crate::types::ToolContext {
+            cwd: "/tmp".to_string(),
+            abort_signal,
+        };
+        let tools = vec![create_test_tool("test", false)];
+
+        let executor = |_name: String, _args: serde_json::Value, _tool_call_id: String| async {
+            Ok(crate::types::ToolResult {
+                result_type: "tool_result".to_string(),
+                tool_use_id: "1".to_string(),
+                content: "should not reach".to_string(),
+                is_error: Some(false),
+                was_persisted: Some(false),
+            })
+        };
+
+        let updates =
+            run_tools_serially(tool_calls, tool_context, tools, executor, None, None).await;
+        assert_eq!(updates.len(), 1);
+        let msg = updates[0].message.as_ref().unwrap();
+        assert!(msg.is_error == Some(true));
+        assert!(msg.content.contains("aborted"));
+    }
+
+    #[tokio::test]
+    async fn test_run_tools_concurrently_aborted() {
+        use crate::utils::abort_controller::create_abort_controller_default;
+
+        let tool_calls = vec![ToolCall {
+            id: "1".to_string(),
+            r#type: "function".to_string(),
+            name: "Read".to_string(),
+            arguments: serde_json::json!({}),
+        }];
+
+        let controller = create_abort_controller_default();
+        controller.abort(None); // Pre-abort
+        let abort_signal = controller.signal().clone();
+
+        let tool_context = crate::types::ToolContext {
+            cwd: "/tmp".to_string(),
+            abort_signal,
+        };
+        let tools = vec![create_test_tool("Read", true)];
+
+        let executor = |_name: String, _args: serde_json::Value, _tool_call_id: String| async {
+            Ok(crate::types::ToolResult {
+                result_type: "tool_result".to_string(),
+                tool_use_id: "1".to_string(),
+                content: "should not reach".to_string(),
+                is_error: Some(false),
+                was_persisted: Some(false),
+            })
+        };
+
+        let updates = run_tools_concurrently(
+            tool_calls, tool_context, tools, executor, None, None,
+        )
+        .await;
+        assert_eq!(updates.len(), 1);
+        let msg = updates[0].message.as_ref().unwrap();
+        assert!(msg.is_error == Some(true));
     }
 }

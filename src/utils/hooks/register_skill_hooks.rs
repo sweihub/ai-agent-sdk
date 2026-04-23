@@ -231,6 +231,44 @@ fn log_for_debugging(msg: &str) {
     log::debug!("{}", msg);
 }
 
+/// Register hooks from multiple loaded skills.
+///
+/// Iterates over a slice of loaded skills and registers any hooks defined
+/// in their frontmatter. Skills without hooks are silently skipped.
+///
+/// # Arguments
+/// * `set_app_state` - Function to update the app state
+/// * `session_id` - The current session ID
+/// * `skills` - Slice of loaded skills with parsed hooks
+/// * `skill_roots` - Optional base directories for each skill (same length as skills, or None)
+pub fn register_hooks_from_skills(
+    set_app_state: &dyn Fn(&dyn Fn(&mut serde_json::Value)),
+    session_id: &str,
+    skills: &[crate::skills::loader::UnifiedSkill],
+) {
+    let mut total_count = 0;
+
+    for skill in skills {
+        if let Some(ref hooks) = skill.hooks {
+            register_skill_hooks(
+                set_app_state,
+                session_id,
+                hooks,
+                &skill.name,
+                None,
+            );
+            total_count += 1;
+        }
+    }
+
+    if total_count > 0 {
+        log_for_debugging(&format!(
+            "Registered hooks from {} skill(s) for session {}",
+            total_count, session_id
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +342,92 @@ mod tests {
 
         // Should have called add_session_hook once
         assert_eq!(call_count.get(), 1);
+    }
+
+    #[test]
+    fn test_register_hooks_from_skills_empty() {
+        let skills: Vec<crate::skills::loader::UnifiedSkill> = vec![];
+        let call_count = std::cell::Cell::new(0usize);
+        let set_app_state = |_: &dyn Fn(&mut serde_json::Value)| {
+            call_count.set(call_count.get() + 1);
+        };
+
+        register_hooks_from_skills(&set_app_state, "test-session", &skills);
+
+        // No hooks registered, but state should be untouched
+        assert_eq!(call_count.get(), 0);
+    }
+
+    #[test]
+    fn test_register_hooks_from_skills_with_hooks() {
+        let hooks = HooksSettings {
+            events: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "Stop".to_string(),
+                    vec![HookMatcher {
+                        matcher: Some("".to_string()),
+                        hooks: vec![serde_json::json!({
+                            "command": "echo test"
+                        })],
+                    }],
+                );
+                map
+            },
+        };
+
+        let skills = vec![crate::skills::loader::UnifiedSkill {
+            name: "test-skill".to_string(),
+            description: "Test".to_string(),
+            source: crate::skills::loader::SkillSource::Project,
+            content: "content".to_string(),
+            paths: None,
+            user_invocable: None,
+            hooks: Some(hooks),
+        }];
+
+        let call_count = std::cell::Cell::new(0usize);
+        let set_app_state = |_: &dyn Fn(&mut serde_json::Value)| {
+            call_count.set(call_count.get() + 1);
+        };
+
+        register_hooks_from_skills(&set_app_state, "test-session", &skills);
+
+        // Should have called add_session_hook once (for the Stop hook)
+        assert_eq!(call_count.get(), 1);
+    }
+
+    #[test]
+    fn test_register_hooks_from_skills_skips_no_hooks() {
+        let skills = vec![
+            crate::skills::loader::UnifiedSkill {
+                name: "no-hooks".to_string(),
+                description: "No hooks".to_string(),
+                source: crate::skills::loader::SkillSource::Bundled,
+                content: "".to_string(),
+                paths: None,
+                user_invocable: None,
+                hooks: None,
+            },
+            crate::skills::loader::UnifiedSkill {
+                name: "also-no-hooks".to_string(),
+                description: "Also no hooks".to_string(),
+                source: crate::skills::loader::SkillSource::User,
+                content: "".to_string(),
+                paths: None,
+                user_invocable: None,
+                hooks: None,
+            },
+        ];
+
+        let call_count = std::cell::Cell::new(0usize);
+        let set_app_state = |_: &dyn Fn(&mut serde_json::Value)| {
+            call_count.set(call_count.get() + 1);
+        };
+
+        register_hooks_from_skills(&set_app_state, "test-session", &skills);
+
+        // No hooks registered
+        assert_eq!(call_count.get(), 0);
     }
 }

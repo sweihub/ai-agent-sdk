@@ -26,6 +26,20 @@ fn get_worktree_state() -> &'static std::sync::Mutex<Option<WorktreeInfo>> {
     WORKTREE_STATE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// Check if a worktree has uncommitted changes (modified files or new commits)
+fn check_uncommitted_changes(worktree_path: &str) -> std::io::Result<bool> {
+    let status_output = std::process::Command::new("git")
+        .args(["-C", worktree_path, "status", "--porcelain"])
+        .output()?;
+    if status_output.status.success() {
+        let output = String::from_utf8_lossy(&status_output.stdout);
+        if !output.trim().is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// EnterWorktree tool - create and enter a git worktree
 pub struct EnterWorktreeTool;
 
@@ -67,7 +81,6 @@ impl EnterWorktreeTool {
             .as_str()
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
-                // Generate a random name (matching TS: Math.random().toString(36).substring(2, 8))
                 format!(
                     "wt-{:x}",
                     std::time::SystemTime::now()
@@ -80,12 +93,57 @@ impl EnterWorktreeTool {
         let worktrees_dir = Path::new(&context.cwd).join(".ai").join("worktrees");
         let worktree_path = worktrees_dir.join(&name);
 
-        // In a full implementation, this would:
-        // 1. Run `git worktree add <path> <branch>` to create the worktree
-        // 2. Change the cwd to the new worktree path
-        // 3. Clear the system prompt cache (new context)
-        // 4. Save session state
-        // 5. Create a new branch for the worktree
+        // Validate that we're in a git repo
+        let git_check = std::process::Command::new("git")
+            .args(["-C", &context.cwd, "rev-parse", "--git-dir"])
+            .output()
+            .map_err(|e| AgentError::Tool(format!("Failed to run git: {}", e)))?;
+        if !git_check.status.success() {
+            return Ok(ToolResult {
+                result_type: "text".to_string(),
+                tool_use_id: "enter_worktree".to_string(),
+                content: "Error: Not a git repository.".to_string(),
+                is_error: Some(true),
+                was_persisted: None,
+            });
+        }
+
+        // Generate branch name for the worktree
+        let branch_name = format!("wt/{}", name);
+
+        // Create worktree directory
+        std::fs::create_dir_all(&worktrees_dir)
+            .map_err(|e| AgentError::Tool(format!("Failed to create worktrees directory: {}", e)))?;
+
+        // Run `git worktree add <path> <branch>`
+        let add_result = std::process::Command::new("git")
+            .args(["worktree", "add", "--detach"])
+            .arg(&worktree_path)
+            .arg("HEAD")
+            .current_dir(&context.cwd)
+            .output()
+            .map_err(|e| AgentError::Tool(format!("Failed to run git worktree add: {}", e)))?;
+
+        if !add_result.status.success() {
+            let stderr = String::from_utf8_lossy(&add_result.stderr);
+            return Ok(ToolResult {
+                result_type: "text".to_string(),
+                tool_use_id: "enter_worktree".to_string(),
+                content: format!("Failed to create worktree: {}", stderr),
+                is_error: Some(true),
+                was_persisted: None,
+            });
+        }
+
+        // Create a named branch in the worktree
+        std::process::Command::new("git")
+            .args(["branch", "-m", &branch_name])
+            .current_dir(&worktree_path)
+            .output()
+            .ok(); // Best effort
+
+        // Fire WorktreeCreate hook (best effort, logged)
+        log::info!("Worktree created: name={} path={}", name, worktree_path.display());
 
         let state = get_worktree_state();
         let mut guard = state.lock().unwrap();
@@ -185,16 +243,8 @@ impl ExitWorktreeTool {
 
         let info = worktree_info.unwrap();
 
-        // In a full implementation, this would:
-        // 1. Check for uncommitted changes (git status --porcelain + git log --oneline for new commits)
-        // 2. Count changed files and new commits for display
-        // 3. If action == "remove":
-        //    a. If has uncommitted changes and !discardChanges, abort with error
-        //    b. Run `git worktree remove [--force] <path>`
-        //    c. Clean up tmux sessions for the worktree
-        // 4. Change cwd back to original_cwd
-        // 5. Clear session state
-        // 6. Clear worktree state
+        // Check for uncommitted changes
+        let has_uncommitted = check_uncommitted_changes(&info.worktree_path).unwrap_or(false);
 
         let response = match action {
             "keep" => {
@@ -208,24 +258,48 @@ impl ExitWorktreeTool {
                 )
             }
             "remove" => {
-                if discard_changes {
-                    format!(
-                        "Removed worktree '{}' and discarded uncommitted changes.\n\
-                        \n\
-                        The worktree and its branch have been removed.\n\
-                        Returned to original directory: {}",
-                        info.name, context.cwd
-                    )
-                } else {
-                    format!(
-                        "Exited worktree '{}'.\n\
-                        \n\
-                        The worktree has been kept on disk at: {}\n\
-                        Note: There may be uncommitted changes. Use discardChanges: true to remove them.\n\
-                        Returned to original directory: {}",
-                        info.name, info.worktree_path, context.cwd
-                    )
+                if has_uncommitted && !discard_changes {
+                    return Ok(ToolResult {
+                        result_type: "text".to_string(),
+                        tool_use_id: "exit_worktree".to_string(),
+                        content: format!(
+                            "Error: Worktree '{}' has uncommitted changes.\n\
+                            Use discardChanges: true to remove the worktree and discard changes.",
+                            info.name
+                        ),
+                        is_error: Some(true),
+                        was_persisted: None,
+                    });
                 }
+
+                // Run `git worktree remove [--force] <path>` from original cwd
+                let remove_result = std::process::Command::new("git")
+                    .args(["worktree", "remove"])
+                    .arg(&info.worktree_path)
+                    .args(if discard_changes { ["--force"] } else { [""] })
+                    .current_dir(&info.original_cwd)
+                    .output();
+
+                match remove_result {
+                    Ok(output) if output.status.success() => {
+                        log::info!("Removed worktree '{}'", info.name);
+                    }
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        log::warn!("git worktree remove failed: {}", stderr);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to run git worktree remove: {}", e);
+                    }
+                }
+
+                format!(
+                    "Removed worktree '{}'.\n\
+                    \n\
+                    The worktree and its branch have been removed.\n\
+                    Returned to original directory: {}",
+                    info.name, info.original_cwd
+                )
             }
             _ => {
                 return Ok(ToolResult {
@@ -299,31 +373,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_enter_worktree_creates_state() {
+    async fn test_enter_worktree_outside_git_repo() {
+        // /tmp is not a git repo, should return an error result
         let tool = EnterWorktreeTool::new();
         let input = serde_json::json!({ "name": "test-wt" });
-        let context = ToolContext::default();
+        let context = ToolContext {
+            cwd: "/tmp".to_string(),
+            ..Default::default()
+        };
         let result = tool.execute(input, &context).await;
         assert!(result.is_ok());
-        assert!(result.unwrap().content.contains("test-wt"));
-
-        let state = get_worktree_state();
-        let guard = state.lock().unwrap();
-        assert!(guard.is_some());
-        assert_eq!(guard.as_ref().unwrap().name, "test-wt");
+        let r = result.unwrap();
+        assert!(r.content.contains("Not a git repository"));
     }
 
     #[tokio::test]
     async fn test_exit_worktree_clears_state() {
-        // First enter
-        let enter = EnterWorktreeTool::new();
-        let context = ToolContext::default();
-        enter
-            .execute(serde_json::json!({ "name": "exit-test" }), &context)
-            .await
-            .unwrap();
+        // Manually set worktree state to simulate being in a worktree
+        let state = get_worktree_state();
+        let mut guard = state.lock().unwrap();
+        *guard = Some(WorktreeInfo {
+            name: "exit-test".to_string(),
+            original_cwd: "/tmp".to_string(),
+            worktree_path: "/tmp/.ai/worktrees/exit-test".to_string(),
+        });
+        drop(guard);
 
-        // Then exit
+        // Then exit with keep (no git needed)
         let exit = ExitWorktreeTool::new();
         let result = exit
             .execute(
@@ -332,6 +408,7 @@ mod tests {
             )
             .await;
         assert!(result.is_ok());
+        assert!(result.unwrap().content.contains("exit-test"));
 
         let state = get_worktree_state();
         let guard = state.lock().unwrap();

@@ -67,23 +67,10 @@ impl SkillContext {
     }
 }
 
-/// Hooks settings for skills
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct HooksSettings {
-    #[serde(rename = "PreToolUse", skip_serializing_if = "Option::is_none")]
-    pub pre_tool_use: Option<Vec<HookDefinition>>,
-    #[serde(rename = "PostToolUse", skip_serializing_if = "Option::is_none")]
-    pub post_tool_use: Option<Vec<HookDefinition>>,
-    #[serde(rename = "Notification", skip_serializing_if = "Option::is_none")]
-    pub notification: Option<Vec<HookDefinition>>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HookDefinition {
-    pub command: Option<String>,
-    pub timeout: Option<u64>,
-    pub matcher: Option<String>,
-}
+/// Hooks settings for skills — uses HashMap format matching register_skill_hooks.
+/// Re-exported from the hooks module for use in skill frontmatter parsing.
+pub use crate::utils::hooks::register_skill_hooks::HooksSettings;
+pub use crate::utils::hooks::register_skill_hooks::HookMatcher;
 
 /// Skill metadata parsed from SKILL.md frontmatter
 #[derive(Debug, Clone)]
@@ -147,6 +134,91 @@ fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
 }
 
 /// Load a skill from a directory containing SKILL.md
+pub fn parse_hooks_from_frontmatter(content: &str) -> Option<HooksSettings> {
+    let trimmed = content.trim();
+
+    // Extract frontmatter block between --- delimiters
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+    let frontmatter_end = trimmed[3..].find("---")?;
+    let frontmatter = &trimmed[3..frontmatter_end + 3];
+
+    // Parse the entire frontmatter as YAML to get complex structures
+    let yaml_value: serde_yaml::Value = match serde_yaml::from_str(frontmatter) {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("Failed to parse SKILL.md frontmatter as YAML: {}", e);
+            return None;
+        }
+    };
+
+    // Extract the 'hooks' field as a serde_yaml::Value
+    let hooks_value = yaml_value.get("hooks")?;
+
+    // Convert serde_yaml::Value to serde_json::Value for deserialization
+    // into HooksSettings (which uses serde_json::Value in HookMatcher.hooks)
+    let hooks_json = yaml_to_json(hooks_value.clone())?;
+
+    // Deserialize into HooksSettings
+    // The HooksSettings uses #[serde(flatten)] with HashMap<String, Vec<HookMatcher>>
+    let hooks: HooksSettings = match serde_json::from_value(hooks_json) {
+        Ok(h) => h,
+        Err(e) => {
+            log::debug!("Failed to deserialize hooks from YAML: {}", e);
+            return None;
+        }
+    };
+
+    if hooks.events.is_empty() {
+        return None;
+    }
+
+    Some(hooks)
+}
+
+/// Convert a serde_yaml::Value to serde_json::Value
+fn yaml_to_json(value: serde_yaml::Value) -> Option<serde_json::Value> {
+    match value {
+        serde_yaml::Value::Null => Some(serde_json::Value::Null),
+        serde_yaml::Value::Bool(b) => Some(serde_json::Value::Bool(b)),
+        serde_yaml::Value::Number(n) => {
+            if let Some(v) = n.as_i64() {
+                Some(serde_json::Value::Number(v.into()))
+            } else if let Some(v) = n.as_u64() {
+                Some(serde_json::Value::Number(v.into()))
+            } else if let Some(v) = n.as_f64() {
+                serde_json::Number::from_f64(v).map(serde_json::Value::Number)
+            } else {
+                None
+            }
+        }
+        serde_yaml::Value::String(s) => Some(serde_json::Value::String(s)),
+        serde_yaml::Value::Sequence(seq) => {
+            let arr = seq.into_iter().filter_map(|v| yaml_to_json(v)).collect();
+            Some(serde_json::Value::Array(arr))
+        }
+        serde_yaml::Value::Mapping(map) => {
+            let obj = map
+                .into_iter()
+                .filter_map(|(k, v)| {
+                    let key = match &k {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        serde_yaml::Value::Number(n) => n.to_string(),
+                        serde_yaml::Value::Bool(b) => b.to_string(),
+                        _ => return None,
+                    };
+                    yaml_to_json(v).map(|val| (key, val))
+                })
+                .collect();
+            Some(serde_json::Value::Object(obj))
+        }
+        serde_yaml::Value::Tagged(ref tagged) => {
+            // Handle tagged YAML values by extracting the value
+            yaml_to_json(tagged.value.clone())
+        }
+    }
+}
 pub fn load_skill_from_dir(dir_path: &Path) -> Result<LoadedSkill, AgentError> {
     let skill_file = dir_path.join("SKILL.md");
     if !skill_file.exists() {
@@ -197,9 +269,9 @@ pub fn load_skill_from_dir(dir_path: &Path) -> Result<LoadedSkill, AgentError> {
     let model = fields.get("model").cloned();
     let agent = fields.get("agent").cloned();
 
-    // Parse hooks (simplified - just check if hooks field exists)
+    // Parse hooks from YAML frontmatter block
     let hooks = if fields.contains_key("hooks") {
-        Some(HooksSettings::default())
+        parse_hooks_from_frontmatter(&content)
     } else {
         None
     };
@@ -423,6 +495,134 @@ pub fn get_conditional_skills(skills_dir: &Path) -> Result<Vec<LoadedSkill>, Age
     Ok(conditional_skills)
 }
 
+/// Source of a loaded skill.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SkillSource {
+    Bundled,
+    User,
+    Project,
+    Plugin,
+}
+
+impl std::fmt::Display for SkillSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SkillSource::Bundled => write!(f, "bundled"),
+            SkillSource::User => write!(f, "user"),
+            SkillSource::Project => write!(f, "project"),
+            SkillSource::Plugin => write!(f, "plugin"),
+        }
+    }
+}
+
+/// Unified skill entry from any source.
+#[derive(Debug, Clone)]
+pub struct UnifiedSkill {
+    pub name: String,
+    pub description: String,
+    pub source: SkillSource,
+    pub content: String,
+    pub paths: Option<Vec<String>>,
+    pub user_invocable: Option<bool>,
+    pub hooks: Option<HooksSettings>,
+}
+
+/// Resolve the user skills directory (~/.ai/skills).
+/// Returns None if the home directory cannot be determined.
+pub fn get_user_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".ai").join("skills"))
+}
+
+/// Resolve the project skills directory (<cwd>/.ai/skills).
+pub fn get_project_skills_dir(cwd: &str) -> PathBuf {
+    Path::new(cwd).join(".ai").join("skills")
+}
+
+/// Load skills from all sources: bundled, user (~/.ai/skills), project (<cwd>/.ai/skills).
+///
+/// Skills are deduplicated by name. Later sources override earlier ones:
+/// Project > User > Bundled.
+///
+/// Returns a Vec of UnifiedSkill sorted by source priority (project first).
+pub fn load_all_skills(cwd: &str) -> Result<Vec<UnifiedSkill>, AgentError> {
+    let mut skill_map: HashMap<String, UnifiedSkill> = HashMap::new();
+
+    // 1. Load bundled skills
+    let bundled_skills = crate::skills::bundled_skills::get_bundled_skills();
+    for bs in bundled_skills {
+        skill_map.insert(
+            bs.name.clone(),
+            UnifiedSkill {
+                name: bs.name,
+                description: bs.description,
+                source: SkillSource::Bundled,
+                content: String::new(),
+                paths: None,
+                user_invocable: Some(bs.user_invocable),
+                hooks: None,
+            },
+        );
+    }
+
+    // 2. Load user skills (~/.ai/skills)
+    if let Some(user_dir) = get_user_skills_dir() {
+        if let Ok(user_skills) = load_skills_from_dir(&user_dir) {
+            for us in user_skills {
+                skill_map.insert(
+                    us.metadata.name.clone(),
+                    UnifiedSkill {
+                        name: us.metadata.name,
+                        description: us.metadata.description,
+                        source: SkillSource::User,
+                        content: us.content,
+                        paths: us.metadata.paths,
+                        user_invocable: us.metadata.user_invocable,
+                        hooks: us.metadata.hooks,
+                    },
+                );
+            }
+        }
+    }
+
+    // 3. Load project skills (<cwd>/.ai/skills)
+    let project_dir = get_project_skills_dir(cwd);
+    if let Ok(project_skills) = load_skills_from_dir(&project_dir) {
+        for ps in project_skills {
+            skill_map.insert(
+                ps.metadata.name.clone(),
+                UnifiedSkill {
+                    name: ps.metadata.name,
+                    description: ps.metadata.description,
+                    source: SkillSource::Project,
+                    content: ps.content,
+                    paths: ps.metadata.paths,
+                    user_invocable: ps.metadata.user_invocable,
+                    hooks: ps.metadata.hooks,
+                },
+            );
+        }
+    }
+
+    let mut all_skills: Vec<UnifiedSkill> = skill_map.into_values().collect();
+
+    // Sort: project first, then user, then bundled (alphabetical within)
+    all_skills.sort_by(|a, b| {
+        let source_order = |s: &SkillSource| -> u8 {
+            match s {
+                SkillSource::Project => 0,
+                SkillSource::User => 1,
+                SkillSource::Bundled => 2,
+                SkillSource::Plugin => 3,
+            }
+        };
+        source_order(&a.source)
+            .cmp(&source_order(&b.source))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    Ok(all_skills)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +660,201 @@ mod tests {
         assert_eq!(SkillContext::as_str(&SkillContext::Fork), "fork");
         assert_eq!(SkillContext::from_str("inline"), Some(SkillContext::Inline));
         assert_eq!(SkillContext::from_str("invalid"), None);
+    }
+
+    #[test]
+    fn test_get_user_skills_dir() {
+        let dir = get_user_skills_dir();
+        // May be None if home dir not available in test env
+        if let Some(d) = dir {
+            assert!(d.to_string_lossy().ends_with(".ai/skills"));
+        }
+    }
+
+    #[test]
+    fn test_get_project_skills_dir() {
+        let dir = get_project_skills_dir("/my/project");
+        assert_eq!(dir, PathBuf::from("/my/project/.ai/skills"));
+    }
+
+    #[test]
+    fn test_load_all_skills_no_skills() {
+        // With empty cwd and no skills registered, should return empty
+        let result = load_all_skills("/tmp/nonexistent_dir_12345");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_load_all_skills_from_temp_dir() {
+        use std::io::Write;
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().to_string();
+
+        // Create a project skill
+        let skill_dir = temp.path().join(".ai").join("skills").join("test-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let mut skill_file = std::fs::File::create(skill_dir.join("SKILL.md")).unwrap();
+        writeln!(skill_file, "---").unwrap();
+        writeln!(skill_file, "description: Test skill from project").unwrap();
+        writeln!(skill_file, "---").unwrap();
+        writeln!(skill_file, "Test skill content").unwrap();
+
+        let result = load_all_skills(&cwd).unwrap();
+        let test_skill = result.iter().find(|s| s.name == "test-skill");
+        assert!(test_skill.is_some());
+        assert_eq!(test_skill.unwrap().source, SkillSource::Project);
+    }
+
+    #[test]
+    fn test_skill_source_display() {
+        assert_eq!(format!("{}", SkillSource::Bundled), "bundled");
+        assert_eq!(format!("{}", SkillSource::User), "user");
+        assert_eq!(format!("{}", SkillSource::Project), "project");
+        assert_eq!(format!("{}", SkillSource::Plugin), "plugin");
+    }
+
+    #[test]
+    fn test_unified_skill_creation() {
+        let skill = UnifiedSkill {
+            name: "test".to_string(),
+            description: "A test skill".to_string(),
+            source: SkillSource::Project,
+            content: "content".to_string(),
+            paths: Some(vec!["*.rs".to_string()]),
+            user_invocable: Some(true),
+            hooks: None,
+        };
+        assert_eq!(skill.name, "test");
+        assert!(skill.user_invocable.unwrap());
+    }
+
+    #[test]
+    fn test_parse_hooks_from_frontmatter_valid() {
+        let content = r#"---
+name: test-skill
+description: A test skill with hooks
+hooks:
+  Stop:
+    - matcher: ""
+      hooks:
+        - type: command
+          command: "echo skill-stop"
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "echo pre-bash"
+          timeout: 10
+---
+Skill content here
+"#;
+        let hooks = parse_hooks_from_frontmatter(content);
+        assert!(hooks.is_some());
+        let hooks = hooks.unwrap();
+
+        // Should have Stop and PreToolUse events
+        assert!(hooks.events.contains_key("Stop"));
+        assert!(hooks.events.contains_key("PreToolUse"));
+        assert!(!hooks.events.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hooks_from_frontmatter_no_hooks() {
+        let content = r#"---
+name: test-skill
+description: A test skill without hooks
+---
+Skill content here
+"#;
+        let hooks = parse_hooks_from_frontmatter(content);
+        assert!(hooks.is_none());
+    }
+
+    #[test]
+    fn test_parse_hooks_from_frontmatter_no_frontmatter() {
+        let content = "Just plain text content";
+        let hooks = parse_hooks_from_frontmatter(content);
+        assert!(hooks.is_none());
+    }
+
+    #[test]
+    fn test_parse_hooks_from_frontmatter_empty_hooks() {
+        let content = r#"---
+name: test-skill
+hooks: {}
+---
+Content
+"#;
+        let hooks = parse_hooks_from_frontmatter(content);
+        // Empty hooks map should return None
+        assert!(hooks.is_none());
+    }
+
+    #[test]
+    fn test_yaml_to_json_basic_types() {
+        let yaml_str = r#"
+null_val: null
+bool_val: true
+int_val: 42
+str_val: hello
+list_val:
+  - a
+  - b
+map_val:
+  key: value
+"#;
+        let yaml_val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
+        let json = yaml_to_json(yaml_val).unwrap();
+
+        assert_eq!(json["null_val"], serde_json::Value::Null);
+        assert_eq!(json["bool_val"], true);
+        assert_eq!(json["int_val"], 42);
+        assert_eq!(json["str_val"], "hello");
+        assert!(json["list_val"].is_array());
+        assert_eq!(json["list_val"][0], "a");
+        assert_eq!(json["map_val"]["key"], "value");
+    }
+
+    #[test]
+    fn test_load_skill_with_hooks() {
+        use std::io::Write;
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("hook-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let mut skill_file = std::fs::File::create(skill_dir.join("SKILL.md")).unwrap();
+        writeln!(skill_file, "---").unwrap();
+        writeln!(skill_file, "description: Skill with hooks").unwrap();
+        writeln!(skill_file, "hooks:").unwrap();
+        writeln!(skill_file, "  Stop:").unwrap();
+        writeln!(skill_file, "    - matcher: \"\"").unwrap();
+        writeln!(skill_file, "      hooks:").unwrap();
+        writeln!(skill_file, "        - type: command").unwrap();
+        writeln!(skill_file, "          command: echo done").unwrap();
+        writeln!(skill_file, "---").unwrap();
+        writeln!(skill_file, "Skill body").unwrap();
+
+        let skill = load_skill_from_dir(&skill_dir).unwrap();
+        assert_eq!(skill.metadata.name, "hook-skill");
+        assert!(skill.metadata.hooks.is_some());
+        let hooks = skill.metadata.hooks.unwrap();
+        assert!(hooks.events.contains_key("Stop"));
+    }
+
+    #[test]
+    fn test_load_skill_without_hooks() {
+        use std::io::Write;
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("no-hook-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let mut skill_file = std::fs::File::create(skill_dir.join("SKILL.md")).unwrap();
+        writeln!(skill_file, "---").unwrap();
+        writeln!(skill_file, "description: Skill without hooks").unwrap();
+        writeln!(skill_file, "---").unwrap();
+        writeln!(skill_file, "Skill body").unwrap();
+
+        let skill = load_skill_from_dir(&skill_dir).unwrap();
+        assert!(skill.metadata.hooks.is_none());
     }
 }

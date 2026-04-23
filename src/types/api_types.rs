@@ -52,7 +52,7 @@ fn default_tool_call_type() -> String {
     "function".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     #[default]
@@ -166,6 +166,9 @@ pub struct ToolDefinition {
     /// Human-readable name for display in the UI (e.g., "Update" vs "Edit")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_facing_name: Option<String>,
+    /// Interrupt behavior: 'cancel' (stop on user interrupt) or 'block' (wait for completion)
+    #[serde(rename = "interruptBehavior", default, skip_serializing_if = "Option::is_none")]
+    pub interrupt_behavior: Option<String>,
 }
 
 impl Default for ToolDefinition {
@@ -181,6 +184,7 @@ impl Default for ToolDefinition {
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }
 }
@@ -199,6 +203,7 @@ impl ToolDefinition {
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }
 
@@ -224,6 +229,23 @@ impl ToolDefinition {
     pub fn with_search_hint(mut self, hint: &str) -> Self {
         self.search_hint = Some(hint.to_string());
         self
+    }
+
+    /// Get interrupt behavior: 'cancel' (stop on user interrupt) or 'block' (wait for completion)
+    /// Default: 'block'
+    pub fn interrupt_behavior(&self) -> crate::tools::types::InterruptBehavior {
+        match self.interrupt_behavior.as_deref() {
+            Some("cancel") => crate::tools::types::InterruptBehavior::Cancel,
+            _ => crate::tools::types::InterruptBehavior::Block,
+        }
+    }
+
+    /// Backfill observable input before observers see it (hooks, events, transcript).
+    /// Mutates in place to add legacy/derived fields. Must be idempotent.
+    /// Default: no-op. Override via `with_interrupt_behavior` for tools that need it.
+    pub fn backfill_observable_input(&self, _input: &mut serde_json::Value) {
+        // Default no-op. Tools that need backfilling should set interrupt_behavior
+        // or use the Tool trait's backfill_observable_input directly.
     }
 
     /// Check if tool can run concurrently (default: false)

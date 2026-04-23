@@ -29,6 +29,37 @@ fn web_browser_schema() -> ToolInputSchema {
     }
 }
 
+fn brief_schema() -> ToolInputSchema {
+    ToolInputSchema {
+        schema_type: "object".to_string(),
+        properties: serde_json::json!({
+            "message": {
+                "type": "string",
+                "description": "The message for the user. Supports markdown formatting."
+            },
+            "attachments": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional file paths to attach"
+            },
+            "status": {
+                "type": "string",
+                "enum": ["normal", "proactive"],
+                "description": "Use 'proactive' when surfacing something the user hasn't asked for"
+            }
+        }),
+        required: Some(vec!["message".to_string()]),
+    }
+}
+
+fn synthetic_output_schema() -> ToolInputSchema {
+    ToolInputSchema {
+        schema_type: "object".to_string(),
+        properties: serde_json::json!({}),
+        required: None,
+    }
+}
+
 /// A boxed async future that returns a ToolResult or AgentError.
 /// This is the standard return type for tool executor functions.
 pub type ToolFuture =
@@ -239,6 +270,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     ("FileRead", "Read files, images, PDFs, notebooks", || {
         ToolDefinition {
@@ -252,6 +284,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: Some("read files, images, PDFs, notebooks".to_string()),
         aliases: None,
     user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("FileWrite", "Write content to files", || ToolDefinition {
@@ -265,6 +298,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     ("Glob", "Find files by name pattern or wildcard", || {
         ToolDefinition {
@@ -279,6 +313,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: Some("find files by name pattern or wildcard".to_string()),
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("Grep", "Search file contents using regex", || {
@@ -293,6 +328,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: Some("search file contents using regex".to_string()),
     aliases: None,
     user_facing_name: None,
+        interrupt_behavior: None,
     }
     }),
     (
@@ -309,6 +345,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         },
     ),
     (
@@ -327,6 +364,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: Some("edit Jupyter notebook cells (.ipynb)".to_string()),
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         },
     ),
     (
@@ -344,6 +382,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: Some("fetch web pages and URLs".to_string()),
     aliases: None,
     user_facing_name: None,
+        interrupt_behavior: None,
     }
         },
     ),
@@ -359,6 +398,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: Some("web search for information".to_string()),
     aliases: None,
     user_facing_name: None,
+        interrupt_behavior: None,
     }
     }),
     (
@@ -376,6 +416,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
     aliases: None,
     user_facing_name: None,
+        interrupt_behavior: None,
     }
         },
     ),
@@ -391,6 +432,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("TaskList", "List all tasks in the task list", || {
@@ -405,6 +447,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("TaskUpdate", "Update an existing task", || ToolDefinition {
@@ -418,6 +461,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     ("TaskGet", "Get details of a specific task", || {
         ToolDefinition {
@@ -431,6 +475,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     (
@@ -447,6 +492,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         },
     ),
     ("TeamDelete", "Delete a team of agents", || ToolDefinition {
@@ -460,6 +506,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     ("SendMessage", "Send a message to another agent", || {
         ToolDefinition {
@@ -473,6 +520,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("EnterWorktree", "Create and enter a git worktree", || {
@@ -487,6 +535,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     (
@@ -503,6 +552,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         },
     ),
     ("EnterPlanMode", "Enter structured planning mode", || {
@@ -518,6 +568,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("ExitPlanMode", "Exit planning mode", || ToolDefinition {
@@ -531,6 +582,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     (
         "AskUserQuestion",
@@ -546,6 +598,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         },
     ),
     ("ToolSearch", "Search for available tools", || {
@@ -560,6 +613,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("CronCreate", "Create a scheduled task", || ToolDefinition {
@@ -573,6 +627,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     ("CronDelete", "Delete a scheduled task", || ToolDefinition {
         name: "CronDelete".to_string(),
@@ -585,6 +640,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     ("CronList", "List all scheduled tasks", || ToolDefinition {
         name: "CronList".to_string(),
@@ -597,6 +653,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     ("Config", "Read or update configuration", || {
         ToolDefinition {
@@ -610,6 +667,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("TodoWrite", "Manage the session task checklist", || {
@@ -626,6 +684,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: Some("manage the session task checklist".to_string()),
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("Skill", "Invoke a skill by name", || {
@@ -640,6 +699,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: Some("invoke skills and workflows".to_string()),
     aliases: None,
     user_facing_name: None,
+        interrupt_behavior: None,
     }
     }),
     ("TaskStop", "Stop a running background task", || {
@@ -654,6 +714,22 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: Some("kill a running background task".to_string()),
     aliases: None,
     user_facing_name: None,
+        interrupt_behavior: None,
+    }
+    }),
+    ("TaskOutput", "Retrieve output from background tasks", || {
+        ToolDefinition {
+        name: "TaskOutput".to_string(),
+        description: "Retrieve output from a running or completed background task (bash command, agent, etc.). Supports blocking wait for completion with configurable timeout.".to_string(),
+        input_schema: task_output_schema(),
+        annotations: None,
+        should_defer: None,
+        always_load: None,
+        is_mcp: None,
+        search_hint: Some("get task output and results".to_string()),
+    aliases: None,
+    user_facing_name: None,
+        interrupt_behavior: None,
     }
     }),
     ("Monitor", "Monitor system resources", || ToolDefinition {
@@ -667,6 +743,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     ("send_user_file", "Send a file from user to agent", || {
         ToolDefinition {
@@ -680,6 +757,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     ("WebBrowser", "Control a web browser", || ToolDefinition {
@@ -693,6 +771,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }),
     (
         "LSP",
@@ -709,6 +788,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
         search_hint: None,
     aliases: None,
     user_facing_name: None,
+        interrupt_behavior: None,
     }
         },
     ),
@@ -728,6 +808,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         },
     ),
     ("ListMcpResourcesTool", "List MCP server resources", || {
@@ -742,6 +823,7 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }
     }),
     (
@@ -758,6 +840,41 @@ const ALL_TOOLS: &[(&str, &str, fn() -> ToolDefinition)] = &[
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
+        },
+    ),
+    (
+        "SendUserMessage",
+        "Send a message to the user",
+        || ToolDefinition {
+            name: "SendUserMessage".to_string(),
+            description: "Send a message to the user that they will actually read. Text outside this tool is visible in the detail view, but most won't open it -- the answer lives here.".to_string(),
+            input_schema: brief_schema(),
+            annotations: None,
+            should_defer: None,
+            always_load: None,
+            is_mcp: None,
+            search_hint: Some("send message to user".to_string()),
+            aliases: None,
+            user_facing_name: None,
+            interrupt_behavior: None,
+        },
+    ),
+    (
+        "StructuredOutput",
+        "Return structured output in the requested format",
+        || ToolDefinition {
+            name: "StructuredOutput".to_string(),
+            description: "Return structured output in the requested format. You MUST call this tool exactly once at the end of your response to provide the structured output.".to_string(),
+            input_schema: synthetic_output_schema(),
+            annotations: None,
+            should_defer: None,
+            always_load: None,
+            is_mcp: None,
+            search_hint: Some("return the final response as structured JSON".to_string()),
+            aliases: None,
+            user_facing_name: None,
+            interrupt_behavior: None,
         },
     ),
 ];
@@ -960,6 +1077,19 @@ fn task_stop_schema() -> ToolInputSchema {
             "shell_id": { "type": "string", "description": "Deprecated: use task_id instead" }
         }),
         required: None,
+    }
+}
+
+// TaskOutput schema
+fn task_output_schema() -> ToolInputSchema {
+    ToolInputSchema {
+        schema_type: "object".to_string(),
+        properties: serde_json::json!({
+            "task_id": { "type": "string", "description": "The task ID to get output from" },
+            "block": { "type": "boolean", "description": "Whether to wait for completion. Default: true" },
+            "timeout": { "type": "number", "description": "Max wait time in ms. Default: 30000, max: 600000" }
+        }),
+        required: Some(vec!["task_id".to_string()]),
     }
 }
 
@@ -1236,5 +1366,6 @@ pub fn build_tool(def: PartialToolDefinition) -> ToolDefinition {
         search_hint: def.search_hint,
         aliases: def.aliases,
         user_facing_name: def.user_facing_name.map(|f| f(None)),
+        interrupt_behavior: None,
     }
 }

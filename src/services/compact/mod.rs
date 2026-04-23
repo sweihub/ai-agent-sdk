@@ -15,6 +15,7 @@ pub mod session_memory_compact;
 pub mod snip_compact;
 pub mod snip_projection;
 pub mod time_based_mc_config;
+pub mod tool_result_budget;
 
 pub use api_microcompact::get_api_context_management;
 pub use auto_compact::*;
@@ -30,6 +31,10 @@ pub use session_memory_compact::*;
 pub use snip_compact::snip_compact_if_known;
 pub use snip_projection::is_snip_boundary_message as is_snip_projection_boundary;
 pub use time_based_mc_config::*;
+pub use tool_result_budget::{
+    apply_tool_result_budget, enforce_tool_result_budget, create_content_replacement_state,
+    reconstruct_content_replacement_state, ContentReplacementState, ToolResultReplacementRecord,
+};
 
 // Re-export compactable tools list for other modules
 pub use microcompact::{

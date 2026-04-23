@@ -1,6 +1,7 @@
 //! Utility modules
 
 pub mod abort_controller;
+pub mod path;
 pub mod circular_buffer;
 pub mod combined_abort_signal;
 pub mod commit_attribution;

@@ -105,6 +105,7 @@ pub use register_frontmatter_hooks::{
 };
 pub use register_skill_hooks::{
     HookMatcher as SkillHookMatcher, HooksSettings as SkillHooksSettings, register_skill_hooks,
+    register_hooks_from_skills,
 };
 pub use session_hooks::{
     AggregatedHookResult, FunctionHook, FunctionHookCallback, FunctionHookMatcher, OnHookSuccess,

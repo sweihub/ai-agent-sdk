@@ -37,6 +37,7 @@ fn test_find_tool_by_name() {
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         },
         ToolDefinition {
             name: "Read".to_string(),
@@ -53,6 +54,7 @@ fn test_find_tool_by_name() {
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         },
     ];
 

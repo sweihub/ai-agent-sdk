@@ -830,6 +830,7 @@ mod tests {
             search_hint: None,
             aliases: None,
             user_facing_name: None,
+            interrupt_behavior: None,
         }];
         let calls = vec![ToolCall {
             id: "1".to_string(),

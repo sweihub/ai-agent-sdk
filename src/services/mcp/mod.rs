@@ -1,8 +1,10 @@
 //! MCP (Model Context Protocol) service module
 
+pub mod agent_mcp;
 pub mod auth;
 pub mod mcp_string_utils;
 pub mod normalization;
+pub mod tool_executor;
 
 // Additional stubs
 mod channel_allowlist;

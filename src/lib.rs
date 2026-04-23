@@ -9,6 +9,7 @@
 #![allow(non_snake_case)]
 #![allow(async_fn_in_trait)]
 
+pub mod cli_ndjson_safe_stringify;
 pub mod agent;
 pub mod error;
 pub mod hooks;
@@ -68,6 +69,7 @@ pub mod session_history;
 pub mod session_memory;
 pub mod skills;
 pub mod team_memory;
+pub mod token_budget;
 pub mod user_agent;
 
 pub use agent::Agent;

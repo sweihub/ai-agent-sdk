@@ -840,6 +840,7 @@ fn test_tool_definition_with_schema() {
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     };
 
     assert_eq!(tool.name, "test_tool");
@@ -1209,6 +1210,8 @@ async fn test_query_engine_with_custom_tool() {
         on_event: None,
         thinking: None,
         abort_controller: None,
+        token_budget: None,
+        agent_id: None,
     });
 
     // Should fail with connection error (no real API server)
@@ -1242,6 +1245,7 @@ fn test_tool_definition_creation() {
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     };
 
     assert_eq!(tool.name, "test_tool");

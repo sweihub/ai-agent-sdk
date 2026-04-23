@@ -495,6 +495,7 @@ fn create_mcp_tool_definition(
         search_hint: None,
         aliases: None,
         user_facing_name: None,
+        interrupt_behavior: None,
     }
 }
 
