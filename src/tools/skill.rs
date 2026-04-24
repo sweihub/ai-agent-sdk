@@ -7,6 +7,9 @@ use crate::error::AgentError;
 use crate::skills::loader::{LoadedSkill, load_skills_from_dir};
 use crate::types::*;
 use crate::utils::cwd::get_cwd;
+use crate::utils::prompt_shell_execution::{
+    FrontmatterShell, execute_shell_commands_in_prompt,
+};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
@@ -244,6 +247,18 @@ impl SkillTool {
         // Try local skills first
         if let Some(skill) = self.get_skill(skill_name) {
             let substituted_content = substitute_arguments(&skill.content, &args_map);
+
+            // Execute any embedded shell commands in the skill prompt
+            let shell = skill
+                .metadata
+                .shell
+                .as_deref()
+                .map(FrontmatterShell::from_str)
+                .unwrap_or_default();
+            let processed_content =
+                execute_shell_commands_in_prompt(&substituted_content, &shell, skill_name)
+                    .await;
+
             let content = format!(
                 "Skill '{}' loaded successfully.\n\
                 Description: {}\n\
@@ -576,6 +591,7 @@ mod tests {
                 model: None,
                 context: None,
                 agent: None,
+                shell: None,
             },
             content: "Process the file {{{filename}}} using {{{method}}}.".to_string(),
             base_dir: "".to_string(),
@@ -620,6 +636,7 @@ mod tests {
                 model: None,
                 context: None,
                 agent: None,
+                shell: None,
             },
             content: "Target: {{{target}}}, Mode: {{{mode}}}.".to_string(),
             base_dir: "".to_string(),

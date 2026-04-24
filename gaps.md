@@ -1,9 +1,9 @@
 # Feature Gaps: TypeScript (claude code) → Rust Port
 
 Generated: 2026-04-23
-Last updated: 2026-04-26 (v0.48.0)
+Last updated: 2026-04-26 (v0.50.0)
 
-## Resolved Gaps (v0.34.0 - v0.48.0)
+## Resolved Gaps (v0.34.0 - v0.50.0)
 
 - ✅ Fork Subagents: `build_forked_messages_from_sdk()`, `sdk_message_from_json()`, fork path wired in agent.rs
 - ✅ Tool Result Budget: `tool_result_budget.rs` with ContentReplacementState, wired in query_engine.rs
@@ -40,6 +40,9 @@ Last updated: 2026-04-26 (v0.48.0)
 - ✅ Subagent Context Threading: can_use_tool, on_event, thinking, user_context, system_context threaded to both subagent creation sites
 - ✅ Skill Argument Substitution: parse_argument_names() and substitute_arguments() with {{{arg}} pattern, 7 tests
 - ✅ Nested Memory Dedup: loaded_nested_memory_paths prevents re-injection across parent/subagent engines
+- ✅ AgentTool Proper Struct: `AgentTool` with `Tool` trait, `AgentToolConfig`, `create_agent_tool_executor()` factory, 4 tests
+- ✅ Skill Shell Execution: `execute_shell_commands_in_prompt()` with block/inline pattern parsing, parallel execution, 21 tests
+
 
 
 ## 1. Agent / SubAgent (High Severity)
@@ -209,17 +212,19 @@ All 10 original high-impact gaps have been resolved:
 9. ✅ **Missing tools** — BriefTool, SyntheticOutputTool, TaskOutputTool, MCPTool all implemented
 10. ✅ **MCP tool execution** — McpToolRegistry with callback dispatch
 
-## Remaining Gaps (v0.48.0)
+## Remaining Gaps (v0.50.0)
 
 Lower-impact gaps that require infrastructure not yet in place:
 
 - **Remote Teleport** — cloud execution via CCR API
 - **Vector search** — embedding-based semantic search for memory (LLM-based selection exists)
-- **WorkflowTool** — workflow orchestration (requires structured output pipeline)
-- **AgentTool as proper Tool struct** — currently registered as inline closures in agent.rs (2 sites)
-- **Skill shell execution** — `executeShellCommandsInPrompt` for skill frontmatter
-- **Skill discovery prefetch** — `startSkillDiscoveryPrefetch` per iteration
+- **WorkflowTool** — workflow orchestration (stub in TS, skipped)
+- **Skill discovery prefetch** — `startSkillDiscoveryPrefetch` per iteration (stub in TS)
 - **Skill memoization** — `lodash/memoize` cache equivalent
-- **Function hooks** — JS/TS-style inline handler hooks
-- **Dynamic permission updates** — `applyPermissionUpdates` / `persistPermissionUpdates`
+- **Function hooks** — JS/TS-style inline handler hooks (requires JS runtime)
 - **Sidechain transcripts** — per-agent transcript subdirectories
+
+Already implemented (no further work needed):
+- ✅ AgentTool as proper Tool struct (v0.49.0)
+- ✅ Skill shell execution (v0.50.0)
+- ✅ Dynamic permission updates (already in codebase)

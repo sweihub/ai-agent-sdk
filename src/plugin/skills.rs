@@ -112,6 +112,7 @@ impl PluginSkills {
                     model: None,
                     context: None,
                     agent: None,
+                    shell: None,
                 };
                 LoadedSkill {
                     metadata,

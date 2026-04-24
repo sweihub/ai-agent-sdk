@@ -95,6 +95,8 @@ pub struct SkillMetadata {
     pub context: Option<SkillContext>,
     /// Agent to use for this skill
     pub agent: Option<String>,
+    /// Shell for embedded command execution (bash or powershell)
+    pub shell: Option<String>,
 }
 
 /// Loaded skill with its metadata and content
@@ -269,6 +271,7 @@ pub fn load_skill_from_dir(dir_path: &Path) -> Result<LoadedSkill, AgentError> {
 
     let model = fields.get("model").cloned();
     let agent = fields.get("agent").cloned();
+    let shell = fields.get("shell").cloned();
 
     // Parse hooks from YAML frontmatter block
     let hooks = if fields.contains_key("hooks") {
@@ -291,6 +294,7 @@ pub fn load_skill_from_dir(dir_path: &Path) -> Result<LoadedSkill, AgentError> {
         model,
         context,
         agent,
+        shell,
     };
 
     Ok(LoadedSkill {

@@ -317,7 +317,10 @@ pub use plan_mode_v2::{
 pub use plans::{Plan, PlanStatus, PlanStep, StepStatus};
 pub use process::{get_process_id, get_process_info, is_running_in_container};
 pub use prompt_editor::{PromptEditorConfig, PromptTemplate};
-pub use prompt_shell_execution::{build_shell_command, execute_prompt_shell};
+pub use prompt_shell_execution::{
+    FrontmatterShell, build_shell_command, execute_prompt_shell,
+    execute_shell_commands_in_prompt,
+};
 pub use query_context::{QueryContext, QueryMatch, QueryResult as QueryContextResult};
 pub use query_guard::{QueryGuard, QueryGuardError};
 pub use query_helpers::{parse_rg_output, search_with_rg};
