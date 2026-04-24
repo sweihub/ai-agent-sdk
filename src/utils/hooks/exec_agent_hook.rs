@@ -1,11 +1,13 @@
 // Source: ~/claudecode/openclaudecode/src/utils/hooks/execAgentHook.ts
 #![allow(dead_code)]
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::types::Message;
 use crate::utils::hooks::helpers::{add_arguments_to_prompt, hook_response_json_schema};
+use crate::utils::hooks::hook_helpers::SYNTHETIC_OUTPUT_TOOL_NAME;
 use crate::utils::hooks::session_hooks::clear_session_hooks;
 
 /// Maximum number of turns for an agent hook
@@ -108,7 +110,7 @@ pub async fn exec_agent_hook(
     });
 
     // Register a session-level stop hook to enforce structured output
-    // This would call register_structured_output_enforcement
+    register_structured_output_enforcement_impl(&hook_agent_id);
 
     let mut structured_output_result: Option<serde_json::Value> = None;
     let mut turn_count = 0;
@@ -174,7 +176,7 @@ pub async fn exec_agent_hook(
     timeout_handle.abort();
 
     // Clean up the session hook we registered for this agent
-    // clear_session_hooks would be called here
+    clear_session_hooks_impl(&hook_agent_id);
 
     // Check if we got a result
     if structured_output_result.is_none() {
@@ -260,14 +262,212 @@ fn get_small_fast_model() -> String {
     "claude-3-haiku-20240307".to_string()
 }
 
-/// Simulate a query loop (placeholder for actual query implementation)
+/// Execute a real multi-turn agent query loop using the QueryEngine.
+/// Collects events via on_event callback and returns them as JSON messages
+/// compatible with the exec_agent_hook consumer (assistant turns, structured
+/// output attachments, done event).
 async fn simulate_query_loop(
-    _messages: &[serde_json::Value],
-    _transcript_path: &str,
-    _model: &str,
+    messages: &[serde_json::Value],
+    transcript_path: &str,
+    model: &str,
 ) -> Vec<serde_json::Value> {
-    // This would use the actual query() function from the crate
-    Vec::new()
+    use crate::agent::register_all_tool_executors;
+    use crate::query_engine::{QueryEngine, QueryEngineConfig};
+    use crate::types::AgentEvent;
+
+    // Channel for streaming events from the spawned query task back to this function.
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<AgentEvent>(256);
+
+    // Build system prompt matching the TypeScript version's instruction template.
+    let system_prompt = format!(
+        "You are verifying a stop condition in Claude Code. Your task is to verify that \
+         the agent completed the given plan. The conversation transcript is available at: \
+         {transcript_path}\nYou can read this file to analyze the conversation history if needed.
+
+Use the available tools to inspect the codebase and verify the condition.
+Use as few steps as possible - be efficient and direct.
+
+When done, return your result using the {tool} tool with:
+- ok: true if the condition is met
+- ok: false with reason if the condition is not met",
+        transcript_path = transcript_path,
+        tool = SYNTHETIC_OUTPUT_TOOL_NAME,
+    );
+
+    // Extract prompt text from input messages (same shape as create_user_message output).
+    let prompt = messages
+        .iter()
+        .filter_map(|m| {
+            Some(
+                m.get("message")
+                    .and_then(|msg| msg.get("content"))
+                    .or_else(|| m.get("content"))?
+                    .as_str()?
+                    .to_string(),
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // Resolve API credentials.
+    let api_key = std::env::var("AI_AUTH_TOKEN")
+        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        .or_else(|_| std::env::var("ANTHROPIC_AUTH_TOKEN"))
+        .ok();
+
+    // If no API key is available, drop the sender so the receiver closes immediately
+    // and the caller's for-await loop exits cleanly.
+    if api_key.is_none() {
+        log_for_debugging("Hooks: No API key available, skipping agent query");
+        drop(sender);
+        return Vec::new();
+    }
+
+    let api_key = api_key.unwrap();
+
+    // Create abort controller that will be cloned into the engine.
+    let abort_controller = crate::utils::abort_controller::create_abort_controller_default();
+
+    // Build the QueryEngine config with an on_event callback that forwards every
+    // AgentEvent through the mpsc channel.
+    let on_event = {
+        let ch = sender.clone();
+        Some(Arc::new({
+            move |event: AgentEvent| {
+                let _ = ch.blocking_send(event);
+            }
+        }) as Arc<dyn Fn(AgentEvent) + Send + Sync>)
+    };
+
+    let mut engine = QueryEngine::new(QueryEngineConfig {
+        cwd: std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string()),
+        model: model.to_string(),
+        api_key: Some(api_key),
+        base_url: std::env::var("AI_API_BASE_URL").ok(),
+        tools: Vec::new(),
+        system_prompt: Some(system_prompt),
+        max_turns: 5,
+        max_budget_usd: None,
+        max_tokens: 4096,
+        fallback_model: None,
+        user_context: std::collections::HashMap::new(),
+        system_context: std::collections::HashMap::new(),
+        can_use_tool: None,
+        on_event,
+        thinking: Some(crate::types::api_types::ThinkingConfig::Disabled),
+        abort_controller: None,
+        token_budget: None,
+        agent_id: Some("hook-agent".to_string()),
+        loaded_nested_memory_paths: HashSet::new(),
+    });
+
+    // Spawn the query task so events flow asynchronously through the channel.
+    let ac = Arc::new(abort_controller);
+    let task = tokio::spawn({
+        let ac = Arc::clone(&ac);
+        async move {
+            // Register all built-in tool executors (includes StructuredOutput).
+            register_all_tool_executors(&mut engine);
+
+            // Override the engine's abort controller so the caller's abort signal
+            // can stop the query loop.
+            // (The engine stores its own AbortController; we signal it via the
+            // watch channel in exec_agent_hook which the loop checks.)
+
+            let _ = engine.submit_message(&prompt).await;
+
+            // Signal completion so the receiver loop can exit.
+            // The sender will also be dropped when this task ends.
+        }
+    });
+
+    // Wait for the query task with a timeout to prevent indefinite hangs.
+    let task_handle = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        task,
+    );
+
+    // Spawn a background task that waits for the query and then drops the sender.
+    let sender_for_cleanup = sender.clone();
+    let _cleanup = tokio::spawn(async move {
+        let _ = task_handle.await;
+        drop(sender_for_cleanup);
+    });
+
+    // Collect events from the channel, converting each AgentEvent to the JSON
+    // message format expected by the caller's loop.
+    let mut result = Vec::new();
+    while let Some(event) = receiver.recv().await {
+        let json = match event {
+            AgentEvent::Thinking { .. } => {
+                // Maps to "assistant" type for turn counting.
+                serde_json::json!({ "type": "assistant" })
+            }
+            AgentEvent::ToolStart {
+                tool_name, input, ..
+            } if tool_name == SYNTHETIC_OUTPUT_TOOL_NAME => {
+                // Structured output tool called — emit as attachment so the
+                // caller detects it and breaks the loop.
+                serde_json::json!({
+                    "type": "attachment",
+                    "attachment": {
+                        "type": "structured_output",
+                        "data": input,
+                    }
+                })
+            }
+            AgentEvent::ToolStart { .. } => {
+                // Other tool starts — mapped to generic stream_event.
+                serde_json::json!({ "type": "stream_event" })
+            }
+            AgentEvent::ToolComplete { .. }
+            | AgentEvent::ToolError { .. }
+            | AgentEvent::ContentBlockStart { .. }
+            | AgentEvent::ContentBlockDelta { .. }
+            | AgentEvent::ContentBlockStop { .. }
+            | AgentEvent::MessageStart { .. }
+            | AgentEvent::MessageStop
+            | AgentEvent::RequestStart
+            | AgentEvent::StreamRequestEnd
+            | AgentEvent::RateLimitStatus { .. }
+            | AgentEvent::MaxTurnsReached { .. }
+            | AgentEvent::Tombstone { .. } => {
+                // Streaming and internal events — mapped to generic stream_event.
+                serde_json::json!({ "type": "stream_event" })
+            }
+            AgentEvent::Done { .. } => {
+                // Query loop finished — emit done event.
+                serde_json::json!({ "type": "done" })
+            }
+        };
+        result.push(json);
+    }
+
+    result
+}
+
+/// No-op set_app_state for use with session hook functions that require a
+/// state setter.  The real session-hook state lives in an internal static,
+/// so this placeholder is sufficient.
+fn noop_set_app_state(_updater: &dyn Fn(&mut serde_json::Value)) {
+    // No-op — internal SESSION_HOOKS_STATE handles the actual storage.
+}
+
+/// Register structured output enforcement for the given session/agent ID.
+/// Wraps the hook_helpers function with a no-op set_app_state.
+fn register_structured_output_enforcement_impl(session_id: &str) {
+    crate::utils::hooks::hook_helpers::register_structured_output_enforcement(
+        &noop_set_app_state,
+        session_id,
+    );
+}
+
+/// Clear session hooks for the given session/agent ID.
+/// Wraps the session_hooks function with a no-op set_app_state.
+fn clear_session_hooks_impl(session_id: &str) {
+    clear_session_hooks(&noop_set_app_state, session_id);
 }
 
 /// Log event for analytics (simplified)

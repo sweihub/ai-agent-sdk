@@ -5,7 +5,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::types::Message;
-use crate::utils::hooks::hook_helpers::{HookResponse, add_arguments_to_prompt};
+use crate::utils::hooks::hook_helpers::{HookResponse, add_arguments_to_prompt, hook_response_schema};
 
 /// Result of a hook execution
 pub enum HookResult {
@@ -210,19 +210,18 @@ fn create_user_message(content: &str) -> Message {
 }
 
 /// Convert Message to JSON value
-fn message_to_json(_msg: &Message) -> serde_json::Value {
-    // Simplified conversion
+fn message_to_json(msg: &Message) -> serde_json::Value {
     serde_json::json!({
-        "type": "user",
-        "message": { "content": "..." }
+        "role": msg.role.as_str(),
+        "content": &msg.content
     })
 }
 
-/// Convert user message struct to JSON value
-fn message_to_json_user(_msg: &Message) -> serde_json::Value {
+/// Convert user message struct to JSON value (forces role to "user")
+fn message_to_json_user(msg: &Message) -> serde_json::Value {
     serde_json::json!({
-        "type": "user",
-        "message": { "content": "..." }
+        "role": "user",
+        "content": &msg.content
     })
 }
 
@@ -231,23 +230,207 @@ fn get_small_fast_model() -> String {
     "claude-3-haiku-20240307".to_string()
 }
 
-/// Query model without streaming (simplified)
+/// Query model without streaming — makes a real non-streaming API call
 async fn query_model_without_streaming(
-    _messages: &[serde_json::Value],
+    messages: &[serde_json::Value],
     system_prompt: &str,
-    _model: &str,
+    model: &str,
     _tool_use_context: &crate::utils::hooks::can_use_tool::ToolUseContext,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    // This would call the actual API query function
-    // For now, return an error indicating this is not implemented
-    Err(format!(
-        "query_model_without_streaming not fully implemented in port. System prompt: {}",
-        system_prompt.chars().take(100).collect::<String>()
-    )
-    .into())
+    // Get API credentials
+    let base_url = std::env::var("AI_API_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".to_string());
+    let api_key = std::env::var("AI_AUTH_TOKEN")
+        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        .or_else(|_| std::env::var("ANTHROPIC_AUTH_TOKEN"))
+        .map_err(|e| format!("No API key found: {}", e))?;
+
+    let url = format!("{}/v1/messages", base_url);
+    let is_anthropic = base_url.contains("anthropic.com");
+
+    let request_body = serde_json::json!({
+        "model": model,
+        "max_tokens": 4096,
+        "system": [{"type": "text", "text": system_prompt}],
+        "messages": messages,
+        "temperature": 0.0,
+        "output": {
+            "type": "json_schema",
+            "name": "hook_response",
+            "schema": hook_response_schema(),
+            "strict": true
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let mut req_builder = client.post(&url).json(&request_body)
+        .header("Content-Type", "application/json");
+
+    if is_anthropic {
+        req_builder = req_builder
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req_builder.send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+
+    if !status.is_success() {
+        return Err(format!("API error {}: {}", status, body).into());
+    }
+
+    // Extract text content from response
+    let parsed: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("Failed to parse API response: {}", e))?;
+
+    let text = extract_text(&parsed);
+    if text.is_empty() {
+        return Err("Empty response from model".into());
+    }
+
+    Ok(text)
+}
+
+/// Extract text content from an API response (supports both Anthropic and OpenAI formats)
+fn extract_text(response: &serde_json::Value) -> String {
+    // OpenAI format: choices[].message.content
+    if let Some(content) = response.get("choices").and_then(|c| c.as_array())
+        .and_then(|c| c.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str()) {
+        return content.to_string();
+    }
+    // Anthropic format: content[].text
+    if let Some(blocks) = response.get("content").and_then(|c| c.as_array()) {
+        let mut texts = Vec::new();
+        for block in blocks {
+            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                texts.push(text.to_string());
+            }
+        }
+        if !texts.is_empty() {
+            return texts.join("\n");
+        }
+    }
+    String::new()
 }
 
 /// Log for debugging
 fn log_for_debugging(msg: &str) {
     log::debug!("{}", msg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_text_anthropic() {
+        let response = serde_json::json!({
+            "content": [
+                {"type": "text", "text": "Hello from Anthropic"},
+                {"type": "text", "text": "Second block"}
+            ]
+        });
+        assert_eq!(extract_text(&response), "Hello from Anthropic\nSecond block");
+    }
+
+    #[test]
+    fn test_extract_text_anthropic_single_block() {
+        let response = serde_json::json!({
+            "content": [
+                {"type": "text", "text": "Single block"}
+            ]
+        });
+        assert_eq!(extract_text(&response), "Single block");
+    }
+
+    #[test]
+    fn test_extract_text_openai() {
+        let response = serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "Hello from OpenAI"
+                    }
+                }
+            ]
+        });
+        assert_eq!(extract_text(&response), "Hello from OpenAI");
+    }
+
+    #[test]
+    fn test_extract_text_empty() {
+        let response = serde_json::json!({});
+        assert_eq!(extract_text(&response), "");
+    }
+
+    #[test]
+    fn test_extract_text_no_text_blocks() {
+        let response = serde_json::json!({
+            "content": [
+                {"type": "tool_use", "name": "some_tool", "input": {}}
+            ]
+        });
+        assert_eq!(extract_text(&response), "");
+    }
+
+    #[test]
+    fn test_message_to_json_user() {
+        let msg = Message {
+            role: crate::types::api_types::MessageRole::User,
+            content: "test content".to_string(),
+            attachments: None,
+            tool_call_id: None,
+            tool_calls: None,
+            is_error: None,
+            is_meta: None,
+        };
+        let json = message_to_json(&msg);
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["content"], "test content");
+    }
+
+    #[test]
+    fn test_message_to_json_assistant() {
+        let msg = Message {
+            role: crate::types::api_types::MessageRole::Assistant,
+            content: "assistant reply".to_string(),
+            attachments: None,
+            tool_call_id: None,
+            tool_calls: None,
+            is_error: None,
+            is_meta: None,
+        };
+        let json = message_to_json(&msg);
+        assert_eq!(json["role"], "assistant");
+        assert_eq!(json["content"], "assistant reply");
+    }
+
+    #[test]
+    fn test_message_to_json_user_forces_user_role() {
+        let msg = Message {
+            role: crate::types::api_types::MessageRole::Assistant,
+            content: "should be user".to_string(),
+            attachments: None,
+            tool_call_id: None,
+            tool_calls: None,
+            is_error: None,
+            is_meta: None,
+        };
+        let json = message_to_json_user(&msg);
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["content"], "should be user");
+    }
+
+    #[test]
+    fn test_role_to_str() {
+        assert_eq!(crate::types::api_types::MessageRole::User.as_str(), "user");
+        assert_eq!(crate::types::api_types::MessageRole::Assistant.as_str(), "assistant");
+        assert_eq!(crate::types::api_types::MessageRole::Tool.as_str(), "tool");
+        assert_eq!(crate::types::api_types::MessageRole::System.as_str(), "system");
+    }
 }

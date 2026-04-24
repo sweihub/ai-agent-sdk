@@ -63,6 +63,18 @@ pub enum MessageRole {
     System,
 }
 
+impl MessageRole {
+    /// Convert the role to its string representation for API serialization
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::Tool => "tool",
+            MessageRole::System => "system",
+        }
+    }
+}
+
 /// Attachments for messages - files, images, etc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
