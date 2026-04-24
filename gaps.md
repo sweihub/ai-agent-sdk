@@ -1,7 +1,7 @@
 # Feature Gaps: TypeScript (claude code) → Rust Port
 
 Generated: 2026-04-23
-Last updated: 2026-04-24 (v0.56.0)
+Last updated: 2026-04-24 (v0.57.0)
 
 ## Resolved Gaps (v0.34.0 - v0.50.0)
 
@@ -49,6 +49,7 @@ Last updated: 2026-04-24 (v0.56.0)
 - ✅ Pre/PostCompact hooks: Wired into snip, microcompact, and reactive compact paths in query_engine.rs
 - ✅ PostToolUseFailure: Differentiated from PostToolUse success path in orchestration closure
 - ✅ Hook Data Plane: `simulate_query_loop()` with QueryEngine, `query_model_without_streaming()` real API call, `query_model_without_streaming_impl()` with dual-format extraction, 29 tests
+- ✅ Concurrency-Safe Tool Annotations: `ToolAnnotations::concurrency_safe()` on 20 read-only tools (FileRead, Glob, Grep, WebSearch, TaskList, TaskGet, ToolSearch, CronList, TodoWrite, Skill, TaskStop, TaskOutput, AskUserQuestion, Config, SendUserMessage, StructuredOutput, CronDelete, LSP, ReadMcpResourceTool, ListMcpResourcesTool), enabling `partition_tool_calls()` parallel execution
 
 
 
@@ -130,7 +131,7 @@ Last updated: 2026-04-24 (v0.56.0)
 
 | Tool | Purpose | Severity |
 |------|---------|----------|
-| **AgentTool** (proper) | As a `Box<dyn Tool>` with full schema, permissions, render methods | High — only an inline closure in agent.rs:1259 |
+| **AgentTool** (proper) | As a `Box<dyn Tool>` with full schema, permissions, render methods | ✅ Implemented — `AgentTool` with `Tool` trait, `AgentToolConfig`, 4 tests |
 | **MCPTool** | Wraps MCP server tools for LLM calling | ✅ Implemented — McpToolRegistry with callback dispatch, 6 tests |
 | **TaskOutputTool** | Retrieve output from background tasks | ✅ Implemented — full tool with blocking/non-blocking modes, 6 tests |
 | **BriefTool** | SendUserMessage, primary visible output channel | ✅ Implemented — full translation with attachments, status, 6 tests |
@@ -146,7 +147,7 @@ Last updated: 2026-04-24 (v0.56.0)
 | Gap | TS | Rust |
 |-----|----|----|
 | `assembleToolPool` | Deduplicates built-in + MCP tools by name, sorts alphabetically (prompt cache stability) | ✅ Implemented — assemble.rs with sorting + dedup, wired in query_engine.rs, 8 tests |
-| `StreamingToolExecutor` | Concurrent vs serial tool execution | Absent — synchronous-per-call only |
+| `StreamingToolExecutor` | Concurrent vs serial tool execution | ✅ Wired — 20 tools marked `concurrency_safe` (FileRead, Glob, Grep, WebSearch, TaskList, TaskGet, ToolSearch, CronList, TodoWrite, Skill, TaskStop, TaskOutput, AskUserQuestion, Config, SendUserMessage, StructuredOutput, CronDelete, LSP, ReadMcpResourceTool, ListMcpResourcesTool). `partition_tool_calls()` batches concurrent-safe tools; non-safe tools run serially. |
 | `interruptBehavior` | `'cancel'` vs `'block'` checked when user submits mid-tool | ✅ Enforced — `Block` tools ignore abort signal, `Cancel` tools respect it, 6 tests |
 | `filterToolsByDenyRules` | Server-prefix stripping for MCP deny rules | ✅ Implemented — 4-step matching in assemble.rs + permissions.rs |
 | `backfillObservableInput` | Backfills observable input for transparency | ✅ Wired — tool_backfill_fns in QueryEngine |
