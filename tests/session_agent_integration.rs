@@ -1212,6 +1212,7 @@ async fn test_query_engine_with_custom_tool() {
         abort_controller: None,
         token_budget: None,
         agent_id: None,
+        loaded_nested_memory_paths: std::collections::HashSet::new(),
     });
 
     // Should fail with connection error (no real API server)

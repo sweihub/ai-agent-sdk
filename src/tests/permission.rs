@@ -908,3 +908,171 @@ fn test_permission_deny_decision_with_reason() {
     let decision = PermissionDenyDecision::new("denied", reason.clone());
     assert_eq!(decision.decision_reason, reason);
 }
+
+// =====================================================================
+// PermissionContext Tests - 4-Step Deny Rule Matching
+// =====================================================================
+
+#[test]
+fn test_deny_rule_exact_match() {
+    let ctx = PermissionContext::new().with_deny_rule(PermissionRule::deny("Bash"));
+
+    assert!(ctx.check_tool("Bash", None).is_denied());
+    // Similar name should NOT be denied
+    assert!(!ctx.check_tool("BashHelper", None).is_denied());
+    assert!(!ctx.check_tool("Read", None).is_denied());
+}
+
+#[test]
+fn test_deny_rule_wildcard_match() {
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_deny_rule(PermissionRule::deny("*"));
+
+    // Wildcard denies everything
+    assert!(ctx.check_tool("Bash", None).is_denied());
+    assert!(ctx.check_tool("Read", None).is_denied());
+    assert!(ctx.check_tool("mcp__fs_read", None).is_denied());
+}
+
+#[test]
+fn test_deny_rule_mcp_server_prefix_double_underscore() {
+    // Rule ending with "__" matches all tools starting with that prefix
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_deny_rule(PermissionRule::deny("mcp__fs__"));
+
+    // Tools starting with "mcp__fs__" should be denied
+    assert!(ctx.check_tool("mcp__fs__read", None).is_denied());
+    assert!(ctx.check_tool("mcp__fs__write", None).is_denied());
+    // Different server should NOT be denied
+    assert!(!ctx.check_tool("mcp__git_status", None).is_denied());
+    // Partial prefix without full double-underscore start should NOT match
+    assert!(!ctx.check_tool("mcp__fs_read", None).is_denied());
+}
+
+#[test]
+fn test_deny_rule_mcp_tool_prefix_single_underscore() {
+    // Rule ending with "_" (but not "__") matches all tools starting with that prefix
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_deny_rule(PermissionRule::deny("mcp__fs_"));
+
+    // Tools starting with "mcp__fs_" should be denied
+    assert!(ctx.check_tool("mcp__fs_read", None).is_denied());
+    assert!(ctx.check_tool("mcp__fs_write", None).is_denied());
+    // Different server should NOT be denied
+    assert!(!ctx.check_tool("mcp__git_status", None).is_denied());
+}
+
+#[test]
+fn test_deny_rule_prefix_does_not_match_partial_tool_name() {
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_deny_rule(PermissionRule::deny("mcp__fs_"));
+
+    // Tool name that contains prefix but doesn't start with it
+    assert!(!ctx.check_tool("custom_mcp__fs_read", None).is_denied());
+}
+
+#[test]
+fn test_deny_rule_priority_exact_over_prefix() {
+    // Exact match should take precedence (checked first in 4-step)
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_deny_rule(PermissionRule::deny("mcp__fs_read"));
+
+    assert!(ctx.check_tool("mcp__fs_read", None).is_denied());
+    // Other tools from same server should NOT be denied by exact match
+    assert!(!ctx.check_tool("mcp__fs_write", None).is_denied());
+}
+
+#[test]
+fn test_deny_rule_content_pattern_does_not_match_tool_name() {
+    // A rule with content pattern (e.g., Bash(ls)) should NOT match
+    // at the tool-name level - it needs content evaluation
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_deny_rule(PermissionRule::with_content(
+            "Bash",
+            PermissionBehavior::Deny,
+            "rm",
+        ));
+
+    // Content-pattern rules should NOT match at tool-name level
+    // Falls through to bypass mode -> allowed
+    assert!(ctx.check_tool("Bash", None).is_allowed());
+}
+
+#[test]
+fn test_allow_rule_wildcard_match() {
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::DontAsk)
+        .with_allow_rule(PermissionRule::allow("*"));
+
+    // Wildcard allow should permit all tools
+    assert!(ctx.check_tool("Bash", None).is_allowed());
+    assert!(ctx.check_tool("Read", None).is_allowed());
+    assert!(ctx.check_tool("mcp__fs_read", None).is_allowed());
+}
+
+#[test]
+fn test_allow_rule_prefix_match() {
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::DontAsk)
+        .with_allow_rule(PermissionRule::allow("mcp__fs_"));
+
+    // Prefix allow should permit all tools starting with prefix
+    assert!(ctx.check_tool("mcp__fs_read", None).is_allowed());
+    assert!(ctx.check_tool("mcp__fs_write", None).is_allowed());
+    // Different tool should fall through to mode (DontAsk -> deny)
+    assert!(ctx.check_tool("mcp__git_status", None).is_denied());
+}
+
+#[test]
+fn test_ask_rule_prefix_match() {
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_ask_rule(PermissionRule::ask("mcp__dangerous_"));
+
+    // Prefix ask should require permission for matching tools
+    assert!(ctx.check_tool("mcp__dangerous_delete", None).is_ask());
+    assert!(ctx.check_tool("mcp__dangerous_format", None).is_ask());
+    // Non-matching tool should be allowed by bypass mode
+    assert!(ctx.check_tool("mcp__safe_read", None).is_allowed());
+}
+
+#[test]
+fn test_deny_rule_matching_order_exact_before_wildcard() {
+    // When both exact and wildcard rules exist, exact is checked first
+    // but since deny is deny, the result is the same. The order matters
+    // for determining WHICH rule matched first (short-circuit).
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_deny_rule(PermissionRule::deny("Bash"))
+        .with_deny_rule(PermissionRule::deny("*"));
+
+    // Both should be denied
+    assert!(ctx.check_tool("Bash", None).is_denied());
+    assert!(ctx.check_tool("Read", None).is_denied());
+}
+
+#[test]
+fn test_deny_rule_server_prefix_before_tool_prefix() {
+    // Server-prefix (__) and tool-prefix (_) should both work
+    let ctx = PermissionContext::new()
+        .with_mode(PermissionMode::Bypass)
+        .with_deny_rule(PermissionRule::deny("mcp__server__"))
+        .with_deny_rule(PermissionRule::deny("mcp__other_"));
+
+    // Server-prefix (__) match
+    assert!(ctx.check_tool("mcp__server__read", None).is_denied());
+    assert!(ctx.check_tool("mcp__server__write", None).is_denied());
+
+    // Tool-prefix (_) match
+    assert!(ctx.check_tool("mcp__other_read", None).is_denied());
+    assert!(ctx.check_tool("mcp__other_write", None).is_denied());
+
+    // Non-matching
+    assert!(ctx.check_tool("mcp__safe_read", None).is_allowed());
+}

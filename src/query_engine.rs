@@ -193,6 +193,8 @@ pub struct QueryEngine {
     budget_tracker: crate::token_budget::BudgetTracker,
     /// Output tokens consumed in the current turn (for TOKEN_BUDGET)
     turn_tokens: u64,
+    /// Memory paths already loaded by parent agents
+    loaded_nested_memory_paths: std::collections::HashSet<String>,
     /// Content replacement state for aggregate tool result budget enforcement
     content_replacement_state: Option<crate::services::compact::ContentReplacementState>,
 }
@@ -245,6 +247,8 @@ pub struct QueryEngineConfig {
     pub token_budget: Option<u64>,
     /// Optional agent ID for subagent identification. Token budget is skipped for subagents.
     pub agent_id: Option<String>,
+    /// Memory paths already loaded by parent agents
+    pub loaded_nested_memory_paths: std::collections::HashSet<String>,
 }
 
 impl Default for QueryEngineConfig {
@@ -268,12 +272,14 @@ impl Default for QueryEngineConfig {
             abort_controller: None,
             token_budget: None,
             agent_id: None,
+            loaded_nested_memory_paths: std::collections::HashSet::new(),
         }
     }
 }
 
 impl QueryEngine {
     pub fn new(mut config: QueryEngineConfig) -> Self {
+        let loaded_memory_paths = config.loaded_nested_memory_paths.clone();
         let abort_controller = config.abort_controller.take().map_or_else(
             || crate::utils::create_abort_controller_default(),
             |arc| (*arc).clone(),
@@ -307,6 +313,7 @@ impl QueryEngine {
             abort_controller,
             budget_tracker: crate::token_budget::BudgetTracker::new(),
             turn_tokens: 0,
+            loaded_nested_memory_paths: loaded_memory_paths,
             content_replacement_state: Some(
                 crate::services::compact::create_content_replacement_state(),
             ),
@@ -1318,6 +1325,15 @@ impl QueryEngine {
             content: prompt.to_string(),
             ..Default::default()
         });
+
+        // Prefetch relevant memories and inject into context
+        if let Some(memory_context) = build_memory_prefetch_context(prompt, &self.config, &self.loaded_nested_memory_paths).await {
+            self.messages.push(crate::types::Message {
+                role: crate::types::MessageRole::User,
+                content: memory_context,
+                ..Default::default()
+            });
+        }
 
         // Note: max_turns check is done AFTER turn completes (matching TypeScript)
         // See below after tool execution loop for the check
@@ -3897,4 +3913,40 @@ async fn make_anthropic_streaming_request(
     validate_stream_completion(&result)?;
 
     Ok(result)
+}
+
+/// Build memory prefetch context by finding relevant memories for the query.
+async fn build_memory_prefetch_context(
+    prompt: &str,
+    config: &QueryEngineConfig,
+    loaded_paths: &std::collections::HashSet<String>,
+) -> Option<String> {
+    use crate::memdir::{find_relevant_memories, get_memory_base_dir, is_auto_memory_enabled};
+
+    if !is_auto_memory_enabled() {
+        return None;
+    }
+
+    let memory_dir = get_memory_base_dir();
+
+    let relevant = find_relevant_memories(prompt, &memory_dir).await;
+
+    if relevant.is_empty() {
+        return None;
+    }
+
+    let new_paths: Vec<String> = relevant
+        .into_iter()
+        .filter(|p| !loaded_paths.contains(p.as_str()))
+        .collect();
+
+    if new_paths.is_empty() {
+        return None;
+    }
+
+    let paths_display = new_paths.join("\n");
+    Some(format!(
+        "<relevant-memories>\nThe following memory files may be relevant to your query:\n{}\n</relevant-memories>",
+        paths_display
+    ))
 }

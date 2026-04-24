@@ -419,6 +419,34 @@ impl Default for PermissionContext {
     }
 }
 
+/// Checks if a tool name matches a PermissionRule's tool_name using 4-step matching.
+///
+/// Step 1: Exact match (`Bash` matches `Bash`)
+/// Step 2: MCP server-prefix match (`mcp__fs__` blocks all tools starting with `mcp__fs__`)
+/// Step 3: MCP tool-prefix match (`mcp__fs_` blocks all tools starting with `mcp__fs_`)
+/// Step 4: Wildcard (`*` matches everything)
+fn tool_name_matches_rule(tool_name: &str, rule: &PermissionRule) -> bool {
+    let rule_tool = &rule.tool_name;
+
+    // Step 1: Exact match
+    if rule_tool == tool_name {
+        return true;
+    }
+    // Step 2: MCP server-prefix match (rule ends with "__")
+    if rule_tool.ends_with("__") && tool_name.starts_with(rule_tool.as_str()) {
+        return true;
+    }
+    // Step 3: MCP tool-prefix match (rule ends with "_")
+    if rule_tool.ends_with('_') && tool_name.starts_with(rule_tool.as_str()) {
+        return true;
+    }
+    // Step 4: Wildcard
+    if rule_tool == "*" {
+        return true;
+    }
+    false
+}
+
 impl PermissionContext {
     /// Create a new permission context
     pub fn new() -> Self {
@@ -459,15 +487,45 @@ impl PermissionContext {
         self
     }
 
+    /// Check if a deny rule matches a tool (4-step: exact, server-prefix, tool-prefix, wildcard).
+    /// Content-pattern deny rules do not match at the tool-name level.
+    fn deny_rule_matches(&self, tool_name: &str, rule: &PermissionRule) -> bool {
+        if rule.rule_content.is_some() {
+            return false;
+        }
+        tool_name_matches_rule(tool_name, rule)
+    }
+
+    /// Check if an allow rule matches a tool AND (optionally) its input content.
+    fn allow_rule_matches(
+        &self,
+        tool_name: &str,
+        input: Option<&serde_json::Value>,
+        rule: &PermissionRule,
+    ) -> bool {
+        if !tool_name_matches_rule(tool_name, rule) {
+            return false;
+        }
+        // If rule has content pattern, input must also match
+        if let Some(content) = &rule.rule_content {
+            if let Some(input) = input {
+                let input_str = input.to_string();
+                return input_str.contains(content);
+            }
+            return false;
+        }
+        true
+    }
+
     /// Check if a tool is allowed
     pub fn check_tool(
         &self,
         tool_name: &str,
         input: Option<&serde_json::Value>,
     ) -> PermissionResult {
-        // Check deny rules first
+        // Check deny rules first (4-step matching)
         for rule in &self.deny_rules {
-            if rule.tool_name == tool_name {
+            if self.deny_rule_matches(tool_name, rule) {
                 return PermissionResult::Deny(PermissionDenyDecision::new(
                     &format!("Tool '{}' is denied by rule", tool_name),
                     PermissionDecisionReason::Rule { rule: rule.clone() },
@@ -475,33 +533,19 @@ impl PermissionContext {
             }
         }
 
-        // Check allow rules
+        // Check allow rules (4-step matching + content)
         for rule in &self.allow_rules {
-            if rule.tool_name == tool_name {
-                // Check content if specified
-                if let Some(content) = &rule.rule_content {
-                    if let Some(input) = input {
-                        let input_str = input.to_string();
-                        if input_str.contains(content) {
-                            return PermissionResult::Allow(
-                                PermissionAllowDecision::new().with_reason(
-                                    PermissionDecisionReason::Rule { rule: rule.clone() },
-                                ),
-                            );
-                        }
-                    }
-                } else {
-                    return PermissionResult::Allow(
-                        PermissionAllowDecision::new()
-                            .with_reason(PermissionDecisionReason::Rule { rule: rule.clone() }),
-                    );
-                }
+            if self.allow_rule_matches(tool_name, input, rule) {
+                return PermissionResult::Allow(
+                    PermissionAllowDecision::new()
+                        .with_reason(PermissionDecisionReason::Rule { rule: rule.clone() }),
+                );
             }
         }
 
-        // Check ask rules
+        // Check ask rules (4-step matching)
         for rule in &self.ask_rules {
-            if rule.tool_name == tool_name {
+            if self.deny_rule_matches(tool_name, rule) {
                 return PermissionResult::Ask(
                     PermissionAskDecision::new(&format!(
                         "Tool '{}' requires permission",

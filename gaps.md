@@ -1,9 +1,9 @@
 # Feature Gaps: TypeScript (claude code) → Rust Port
 
 Generated: 2026-04-23
-Last updated: 2026-04-26 (v0.39.0)
+Last updated: 2026-04-26 (v0.48.0)
 
-## Resolved Gaps (v0.34.0 - v0.38.0)
+## Resolved Gaps (v0.34.0 - v0.48.0)
 
 - ✅ Fork Subagents: `build_forked_messages_from_sdk()`, `sdk_message_from_json()`, fork path wired in agent.rs
 - ✅ Tool Result Budget: `tool_result_budget.rs` with ContentReplacementState, wired in query_engine.rs
@@ -31,7 +31,15 @@ Last updated: 2026-04-26 (v0.39.0)
 - ✅ Agent MCP Servers: initialize_agent_mcp_servers(), parse_agent_mcp_servers(), MCP tool merging into subagent engine, cleanup on completion, 9 tests
 - ✅ backfillObservableInput: tool_backfill_fns in QueryEngine, register_tool_backfill(), FileRead/FileWrite/FileEdit backfill file_path expansion, wired into query engine closure for hooks/events, original args passed to executor
 - ✅ interruptBehavior: interruptBehavior field on ToolDefinition, interrupt_behavior() method resolves Cancel/Block, abort signal checks in orchestration serial and concurrent paths, synthetic abort errors on interrupt
-
+- ✅ Auto Mode Classifier: PermissionMode::Auto with denial tracking, allowlist for safe tools, fallback after 3 denials, 14 tests
+- ✅ Denial Tracking: DenialTrackingState with counter + threshold, manual Clone/Debug impl, integrated into Auto mode
+- ✅ Gitignore Skill Check: is_path_gitignored() via git check-ignore, wired into load_skills_from_dir(), 2 tests
+- ✅ side_query Module: SideQueryOptions builder, side_query() Anthropic format, side_query_simple() OpenAI format, side_query_with_tools(), SideQueryMemorySelection parser, 4 tests
+- ✅ Memory Prefetch: find_relevant_memories() with LLM-based selection, loaded_nested_memory_paths on QueryEngineConfig, wired into query loop
+- ✅ Deny Rule 4-Step Matching: tool_matches_rule in permissions.rs + PermissionContext::check_tool() implement exact → server-prefix → tool-prefix → wildcard, 12 tests
+- ✅ Subagent Context Threading: can_use_tool, on_event, thinking, user_context, system_context threaded to both subagent creation sites
+- ✅ Skill Argument Substitution: parse_argument_names() and substitute_arguments() with {{{arg}} pattern, 7 tests
+- ✅ Nested Memory Dedup: loaded_nested_memory_paths prevents re-injection across parent/subagent engines
 
 
 ## 1. Agent / SubAgent (High Severity)
@@ -66,7 +74,7 @@ Last updated: 2026-04-26 (v0.39.0)
 
 ### Context Threading
 - **TS:** `createSubagentContext` clones file cache, provisions `contentReplacementState`, `renderedSystemPrompt`, `localDenialTracking`
-- **Rust:** Creates bare `QueryEngine::new()` with `on_event: None`, `thinking: None`, `can_use_tool: None`
+- **Rust:** ✅ Wired — can_use_tool, on_event, thinking, user_context, system_context threaded to both subagent creation sites; fork subagents also inherit denial tracking
 
 ## 2. QueryEngine / Context Compaction (High Severity)
 
@@ -119,7 +127,7 @@ Last updated: 2026-04-26 (v0.39.0)
 | **DiscoverSkillsTool** | On-demand skill discovery | ✅ Stub — name constant exported, matching TS feature-gated prompt-only pattern |
 | **SnipTool** | Model-callable compaction tool | ✅ Stub — name constant exported, matching TS feature-gated pattern |
 | **SyntheticOutputTool** | Structured output enforcement | ✅ Implemented — with_schema() support, 3 tests |
-| **CtxInspectTool** | Context inspection | Low — not a real TS tool, conceptual |
+| **AgentTool** (proper) | As a `Box<dyn Tool>` with full schema, permissions, render methods | Medium — registered as inline closures in agent.rs (2 sites); functional but not a proper Tool struct |
 | **TerminalCaptureTool** | Terminal capture | Low |
 | **VerifyPlanExecutionTool** | Plan execution verification | Low |
 
@@ -130,9 +138,9 @@ Last updated: 2026-04-26 (v0.39.0)
 | `assembleToolPool` | Deduplicates built-in + MCP tools by name, sorts alphabetically (prompt cache stability) | ✅ Implemented — assemble.rs with sorting + dedup, wired in query_engine.rs, 8 tests |
 | `StreamingToolExecutor` | Concurrent vs serial tool execution | Absent — synchronous-per-call only |
 | `interruptBehavior` | `'cancel'` vs `'block'` checked when user submits mid-tool | Not enforced |
-| `filterToolsByDenyRules` | Server-prefix stripping for MCP deny rules | Absent |
-| `backfillObservableInput` | Backfills observable input for transparency | Trait method exists but not wired |
-| `toAutoClassifierInput` | Auto-mode security classification | Not integrated |
+| `filterToolsByDenyRules` | Server-prefix stripping for MCP deny rules | ✅ Implemented — 4-step matching in assemble.rs + permissions.rs |
+| `backfillObservableInput` | Backfills observable input for transparency | ✅ Wired — tool_backfill_fns in QueryEngine |
+| `toAutoClassifierInput` | Auto-mode security classification | ✅ Integrated — PermissionMode::Auto with allowlist + denial tracking |
 
 ## 4. Hooks (Medium Severity)
 
@@ -150,11 +158,11 @@ Last updated: 2026-04-26 (v0.39.0)
 | Gap | TS | Rust |
 |-----|----|----|
 | `canUseTool` callback | 6-parameter fn returning 3-way `PermissionDecision` (allow/deny/ask) + `updatedInput` | ✅ Partial — PermissionResult::Allow/Deny/Ask variants handled in orchestration closure. Ask returns error in SDK. |
-| Deny rule matching | 4-step matcher: exact → wildcard → server-prefix → tool-prefix | Absent — no `getDenyRuleForTool()` |
+| Deny rule matching | 4-step matcher: exact → wildcard → server-prefix → tool-prefix | ✅ Implemented — tool_matches_rule + PermissionContext::check_tool() with 4-step matching, 12 tests |
 | `PermissionResult::Ask` | User prompting for permission | Not handled — boolean return, no ask path |
 | Dynamic rule updates | `applyPermissionUpdates` / `persistPermissionUpdates` | Absent |
-| Auto mode classifier | `classifierDecision` transcript-based classification | Absent |
-| Denial tracking | Counter + threshold for fallback-to-prompting | Absent |
+| Auto mode classifier | `classifierDecision` transcript-based classification | ✅ Implemented — PermissionMode::Auto with allowlist, denial tracking, fallback message, 14 tests |
+| Denial tracking | Counter + threshold for fallback-to-prompting | ✅ Implemented — DenialTrackingState with counter + threshold, integrated into Auto mode
 
 ## 6. Session (Medium Severity)
 
@@ -170,10 +178,10 @@ Last updated: 2026-04-26 (v0.39.0)
 | Gap | TS | Rust |
 |-----|----|----|
 | Multi-source loading | User/project/local/policy/plugin/bundled/MCP directories | ✅ Implemented — load_all_skills() with bundled → user (~/.ai/skills) → project (<cwd>/.ai/skills) + dedup, 6 tests |
-| Gitignore check | `isPathGitignored` filter | Absent |
+| Gitignore check | `isPathGitignored` filter | ✅ Implemented — is_path_gitignored() via git check-ignore, wired into load_skills_from_dir(), 2 tests |
 | Skill hook integration | `registerFrontmatterHooks` | ✅ Wired — register_hooks_from_skills() called in init_engine() |
 | Shell execution | `executeShellCommandsInPrompt` for frontmatter | Absent |
-| Argument substitution | `parseArgumentNames` / `substituteArguments` | Absent |
+| Argument substitution | `parseArgumentNames` / `substituteArguments` | ✅ Implemented — parse_argument_names(), substitute_arguments() with {{{arg}} pattern, 7 tests |
 | Discovery prefetch | `startSkillDiscoveryPrefetch` per iteration | Absent |
 | DiscoverSkillsTool | On-demand discovery | Absent |
 | Memoization | `lodash/memoize` cache | Absent |
@@ -182,9 +190,9 @@ Last updated: 2026-04-26 (v0.39.0)
 
 | Gap | TS | Rust |
 |-----|----|----|
-| Vector search | Embedding-based semantic search with RRF ranking | `find_relevant_memories.rs` exists but no embedding integration |
-| Memory prefetch | `startRelevantMemoryPrefetch` consumed per user turn | Absent from query loop |
-| Nested memory dedup | `loadedNestedMemoryPaths` prevents re-injection | Not wired in query engine |
+| Vector search | Embedding-based semantic search with RRF ranking | `find_relevant_memories.rs` exists with LLM-based selection, no embedding integration |
+| Memory prefetch | `startRelevantMemoryPrefetch` consumed per user turn | ✅ Implemented — find_relevant_memories() with sideQuery LLM selection, wired into query loop |
+| Nested memory dedup | `loadedNestedMemoryPaths` prevents re-injection | ✅ Implemented — loaded_nested_memory_paths on QueryEngineConfig, inherited by subagents |
 
 ## Top 10 Most Impactful Gaps (v0.34.0 — mostly resolved in v0.36.0)
 
@@ -201,10 +209,17 @@ All 10 original high-impact gaps have been resolved:
 9. ✅ **Missing tools** — BriefTool, SyntheticOutputTool, TaskOutputTool, MCPTool all implemented
 10. ✅ **MCP tool execution** — McpToolRegistry with callback dispatch
 
-## Remaining Gaps (v0.39.0)
+## Remaining Gaps (v0.48.0)
 
 Lower-impact gaps that require infrastructure not yet in place:
 
 - **Remote Teleport** — cloud execution via CCR API
-- **Vector search** — embedding-based semantic search for memory
+- **Vector search** — embedding-based semantic search for memory (LLM-based selection exists)
 - **WorkflowTool** — workflow orchestration (requires structured output pipeline)
+- **AgentTool as proper Tool struct** — currently registered as inline closures in agent.rs (2 sites)
+- **Skill shell execution** — `executeShellCommandsInPrompt` for skill frontmatter
+- **Skill discovery prefetch** — `startSkillDiscoveryPrefetch` per iteration
+- **Skill memoization** — `lodash/memoize` cache equivalent
+- **Function hooks** — JS/TS-style inline handler hooks
+- **Dynamic permission updates** — `applyPermissionUpdates` / `persistPermissionUpdates`
+- **Sidechain transcripts** — per-agent transcript subdirectories

@@ -6,6 +6,8 @@
 use crate::error::AgentError;
 use crate::skills::loader::{LoadedSkill, load_skills_from_dir};
 use crate::types::*;
+use crate::utils::cwd::get_cwd;
+use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -20,7 +22,7 @@ static REMOTE_SKILLS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new()
 
 fn init_skills_map() -> Mutex<HashMap<String, LoadedSkill>> {
     let mut skills = HashMap::new();
-    if let Ok(loaded) = load_skills_from_dir(Path::new("examples/skills")) {
+    if let Ok(loaded) = load_skills_from_dir(Path::new("examples/skills"), &get_cwd()) {
         for skill in loaded {
             skills.insert(skill.metadata.name.clone(), skill);
         }
@@ -36,12 +38,57 @@ fn get_remote_skills() -> &'static Mutex<HashMap<String, String>> {
     REMOTE_SKILLS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Regex for triple-brace argument placeholders: `{{{name}}}`
+fn argument_pattern() -> &'static Regex {
+    lazy_static::lazy_static! {
+        static ref ARG_PATTERN: Regex = Regex::new(r"\{\{\{(\w+)\}\}\}").unwrap();
+    }
+    &ARG_PATTERN
+}
+
+/// Parse argument names from skill content.
+///
+/// Finds all `{{{name}}}` patterns and returns a deduplicated list
+/// in first-occurrence order.
+pub fn parse_argument_names(skill_content: &str) -> Vec<String> {
+    let mut seen = HashMap::new();
+    let mut names = Vec::new();
+    for cap in argument_pattern().captures_iter(skill_content) {
+        if let Some(name) = cap.get(1).map(|m| m.as_str().to_string()) {
+            if seen.insert(name.clone(), ()).is_none() {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// Substitute `{{{arg_name}}}` placeholders in content with values from the args map.
+///
+/// Placeholders whose key is not present in the map are left unchanged.
+pub fn substitute_arguments(content: &str, args: &HashMap<String, String>) -> String {
+    if args.is_empty() {
+        return content.to_string();
+    }
+    argument_pattern()
+        .replace_all(content, |cap: &regex::Captures| {
+            let key = cap[1].to_string();
+            if let Some(val) = args.get(&key) {
+                val.clone()
+            } else {
+                // Leave unchanged if not in map
+                cap[0].to_string()
+            }
+        })
+        .to_string()
+}
+
 /// Register skills from a directory
 pub fn register_skills_from_dir(dir: &Path) {
     if dir.as_os_str().is_empty() {
         return;
     }
-    if let Ok(loaded) = load_skills_from_dir(dir) {
+    if let Ok(loaded) = load_skills_from_dir(dir, &get_cwd()) {
         if let Ok(mut skills) = get_skills_map().lock() {
             for skill in loaded {
                 skills.insert(skill.metadata.name.clone(), skill);
@@ -134,7 +181,22 @@ impl SkillTool {
     ) -> Result<ToolResult, AgentError> {
         let skill_name = input["skill"].as_str().unwrap_or("");
         let mode = input["mode"].as_str().unwrap_or("inline");
-        let args = input.get("args");
+
+        // Parse args into a HashMap for argument substitution
+        let args_map: HashMap<String, String> = if let Some(args_obj) = input.get("args") {
+            if let Some(obj) = args_obj.as_object() {
+                obj.iter()
+                    .filter_map(|(k, v)| {
+                        let val = v.as_str().unwrap_or("").to_string();
+                        Some((k.clone(), val))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
 
         // Handle prefix matching for skill groups (e.g., "review:*")
         if skill_name.ends_with(":*") {
@@ -181,13 +243,14 @@ impl SkillTool {
 
         // Try local skills first
         if let Some(skill) = self.get_skill(skill_name) {
+            let substituted_content = substitute_arguments(&skill.content, &args_map);
             let content = format!(
                 "Skill '{}' loaded successfully.\n\
                 Description: {}\n\
                 Mode: {}\n\
                 \n{}\n\n\
                 You can now use tools to complete the task.",
-                skill_name, &skill.metadata.description, mode, skill.content
+                skill_name, &skill.metadata.description, mode, substituted_content
             );
 
             // In fork mode, we would spawn a sub-agent with this skill
@@ -221,6 +284,7 @@ impl SkillTool {
         // Try remote skills (ant-only feature in TS)
         let remote_guard = get_remote_skills().lock().unwrap();
         if let Some(remote_content) = remote_guard.get(skill_name) {
+            let substituted_remote = substitute_arguments(remote_content, &args_map);
             return Ok(ToolResult {
                 result_type: "text".to_string(),
                 tool_use_id: "".to_string(),
@@ -228,7 +292,7 @@ impl SkillTool {
                     "Remote skill '{}' loaded successfully.\n\
                     \n{}\n\n\
                     You can now use tools to complete the task.",
-                    skill_name, remote_content
+                    skill_name, substituted_remote
                 ),
                 is_error: Some(false),
                 was_persisted: None,
@@ -314,7 +378,7 @@ pub fn reset_skills_for_testing() {
     if let Ok(mut skills) = get_skills_map().lock() {
         // Re-init from directory
         skills.clear();
-        if let Ok(loaded) = crate::skills::loader::load_skills_from_dir(std::path::Path::new("examples/skills")) {
+        if let Ok(loaded) = crate::skills::loader::load_skills_from_dir(std::path::Path::new("examples/skills"), &std::env::current_dir().unwrap_or_default()) {
             for skill in loaded {
                 skills.insert(skill.metadata.name.clone(), skill);
             }
@@ -326,6 +390,7 @@ pub fn reset_skills_for_testing() {
 mod tests {
     use super::*;
 
+    use crate::skills::loader::SkillMetadata;
     use crate::tests::common::clear_all_test_state;
 
     #[test]
@@ -382,5 +447,198 @@ mod tests {
             "Content: {}",
             content
         );
+    }
+
+    // --- Argument substitution tests ---
+
+    #[test]
+    fn test_parse_argument_names_single() {
+        let names = parse_argument_names("Review the file {{{filename}}} for issues");
+        assert_eq!(names, vec!["filename"]);
+    }
+
+    #[test]
+    fn test_parse_argument_names_multiple() {
+        let content = "Review {{{file}}} using {{{language}}}. Output to {{{report}}}.";
+        let names = parse_argument_names(content);
+        assert_eq!(names, vec!["file", "language", "report"]);
+    }
+
+    #[test]
+    fn test_parse_argument_names_deduplicates() {
+        let content = "{{{file}}} is the input. Process {{{file}}} and return result.";
+        let names = parse_argument_names(content);
+        assert_eq!(names, vec!["file"]);
+    }
+
+    #[test]
+    fn test_parse_argument_names_preserves_order() {
+        let content = "Do X with {{{first}}}, then Y with {{{second}}}, then Z with {{{first}}} again.";
+        let names = parse_argument_names(content);
+        assert_eq!(names, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn test_parse_argument_names_empty() {
+        let names = parse_argument_names("No placeholders here");
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_parse_argument_names_with_underscores_and_digits() {
+        let content = "Use {{{my_file_2}}} and {{{report_v3}}}.";
+        let names = parse_argument_names(content);
+        assert_eq!(names, vec!["my_file_2", "report_v3"]);
+    }
+
+    #[test]
+    fn test_substitute_arguments_complete_map() {
+        let content = "Review {{{file}}} in {{{language}}}.";
+        let mut args = HashMap::new();
+        args.insert("file".to_string(), "main.rs".to_string());
+        args.insert("language".to_string(), "Rust".to_string());
+        let result = substitute_arguments(content, &args);
+        assert_eq!(result, "Review main.rs in Rust.");
+    }
+
+    #[test]
+    fn test_substitute_arguments_partial_map() {
+        let content = "Review {{{file}}} in {{{language}}}.";
+        let mut args = HashMap::new();
+        args.insert("file".to_string(), "main.rs".to_string());
+        // language is missing
+        let result = substitute_arguments(content, &args);
+        assert_eq!(result, "Review main.rs in {{{language}}}.");
+    }
+
+    #[test]
+    fn test_substitute_arguments_empty_map() {
+        let content = "Review {{{file}}} in {{{language}}}.";
+        let args = HashMap::new();
+        let result = substitute_arguments(content, &args);
+        assert_eq!(result, "Review {{{file}}} in {{{language}}}.");
+    }
+
+    #[test]
+    fn test_substitute_arguments_value_with_special_regex_chars() {
+        let content = "Process {{{file}}}.";
+        let mut args = HashMap::new();
+        // Value contains regex special characters
+        args.insert("file".to_string(), "src/main.rs (v1.0).txt".to_string());
+        let result = substitute_arguments(content, &args);
+        assert_eq!(result, "Process src/main.rs (v1.0).txt.");
+    }
+
+    #[test]
+    fn test_substitute_arguments_value_with_braces() {
+        let content = "Config: {{{template}}}.";
+        let mut args = HashMap::new();
+        args.insert("template".to_string(), "{{json: true}}".to_string());
+        let result = substitute_arguments(content, &args);
+        assert_eq!(result, "Config: {{json: true}}.");
+    }
+
+    #[test]
+    fn test_substitute_arguments_no_placeholders() {
+        let content = "This is plain text with no arguments.";
+        let mut args = HashMap::new();
+        args.insert("foo".to_string(), "bar".to_string());
+        let result = substitute_arguments(content, &args);
+        assert_eq!(result, "This is plain text with no arguments.");
+    }
+
+    #[test]
+    fn test_substitute_arguments_repeated_placeholder() {
+        let content = "File: {{{name}}}. Again: {{{name}}}.";
+        let mut args = HashMap::new();
+        args.insert("name".to_string(), "test.txt".to_string());
+        let result = substitute_arguments(content, &args);
+        assert_eq!(result, "File: test.txt. Again: test.txt.");
+    }
+
+    #[tokio::test]
+    async fn test_skill_tool_execute_with_args() {
+        clear_all_test_state();
+
+        // Register a skill with argument placeholders
+        let skill = LoadedSkill {
+            metadata: SkillMetadata {
+                name: "test_arg_skill".to_string(),
+                description: "A skill with args".to_string(),
+                allowed_tools: None,
+                argument_hint: None,
+                arg_names: None,
+                when_to_use: None,
+                user_invocable: None,
+                paths: None,
+                hooks: None,
+                effort: None,
+                model: None,
+                context: None,
+                agent: None,
+            },
+            content: "Process the file {{{filename}}} using {{{method}}}.".to_string(),
+            base_dir: "".to_string(),
+        };
+        register_skill(skill);
+
+        let tool = SkillTool::new();
+        let input = serde_json::json!({
+            "skill": "test_arg_skill",
+            "args": {
+                "filename": "main.rs",
+                "method": "static analysis"
+            }
+        });
+        let context = ToolContext::default();
+        let result = tool.execute(input, &context).await;
+        assert!(result.is_ok());
+        let content = result.unwrap().content;
+        assert!(content.contains("main.rs"), "Content should contain substituted filename: {}", content);
+        assert!(content.contains("static analysis"), "Content should contain substituted method: {}", content);
+        // The original placeholders should be gone
+        assert!(!content.contains("{{{filename}}}"), "Placeholder should be substituted: {}", content);
+        assert!(!content.contains("{{{method}}}"), "Placeholder should be substituted: {}", content);
+    }
+
+    #[tokio::test]
+    async fn test_skill_tool_execute_with_partial_args() {
+        clear_all_test_state();
+
+        let skill = LoadedSkill {
+            metadata: SkillMetadata {
+                name: "test_partial_args".to_string(),
+                description: "Partial args test".to_string(),
+                allowed_tools: None,
+                argument_hint: None,
+                arg_names: None,
+                when_to_use: None,
+                user_invocable: None,
+                paths: None,
+                hooks: None,
+                effort: None,
+                model: None,
+                context: None,
+                agent: None,
+            },
+            content: "Target: {{{target}}}, Mode: {{{mode}}}.".to_string(),
+            base_dir: "".to_string(),
+        };
+        register_skill(skill);
+
+        let tool = SkillTool::new();
+        let input = serde_json::json!({
+            "skill": "test_partial_args",
+            "args": {
+                "target": "production"
+            }
+        });
+        let context = ToolContext::default();
+        let result = tool.execute(input, &context).await;
+        assert!(result.is_ok());
+        let content = result.unwrap().content;
+        assert!(content.contains("production"), "Substituted value should appear: {}", content);
+        // Unsubstituted placeholder should remain
+        assert!(content.contains("{{{mode}}}"), "Unsubstituted placeholder should remain: {}", content);
     }
 }

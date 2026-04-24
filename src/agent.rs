@@ -793,10 +793,18 @@ fn register_all_tool_executors(engine: &mut QueryEngine) {
 /// ```
 #[derive(Clone)]
 pub struct Agent {
-    inner: std::sync::Arc<std::sync::Mutex<AgentInner>>,
+    pub(crate) inner: std::sync::Arc<std::sync::Mutex<AgentInner>>,
 }
 
-struct AgentInner {
+#[cfg(test)]
+impl Agent {
+    /// Test-only accessor for the inner agent state.
+    pub(crate) fn inner_for_test(&self) -> &std::sync::Arc<std::sync::Mutex<AgentInner>> {
+        &self.inner
+    }
+}
+
+pub(crate) struct AgentInner {
     model: String,
     api_key: Option<String>,
     base_url: Option<String>,
@@ -806,12 +814,15 @@ struct AgentInner {
     max_budget_usd: Option<f64>,
     max_tokens: u32,
     fallback_model: Option<String>,
-    thinking: Option<ThinkingConfig>,
+    pub(crate) thinking: Option<ThinkingConfig>,
     mcp_servers: Option<std::collections::HashMap<String, crate::mcp::McpServerConfig>>,
     tool_pool: Vec<ToolDefinition>,
-    allowed_tools: Vec<String>,
-    disallowed_tools: Vec<String>,
-    on_event: Option<std::sync::Arc<dyn Fn(AgentEvent) + Send + Sync>>,
+    pub(crate) allowed_tools: Vec<String>,
+    pub(crate) disallowed_tools: Vec<String>,
+    #[cfg(test)]
+    pub on_event: Option<std::sync::Arc<dyn Fn(AgentEvent) + Send + Sync>>,
+    #[cfg(not(test))]
+    pub(crate) on_event: Option<std::sync::Arc<dyn Fn(AgentEvent) + Send + Sync>>,
     session_id: String,
     abort_controller: std::sync::Arc<crate::utils::AbortController>,
     /// Persisted QueryEngine for multi-turn reuse (matches TypeScript pattern).
@@ -1034,6 +1045,7 @@ impl Agent {
                 abort_controller: Some(inner.abort_controller.clone()),
                 token_budget: None,
                 agent_id: None,
+                loaded_nested_memory_paths: std::collections::HashSet::new(),
             };
             let mut engine = QueryEngine::new(config);
             register_all_tool_executors(&mut engine);
@@ -1151,7 +1163,39 @@ impl Agent {
             abort_controller: Some(inner.abort_controller.clone()),
             token_budget: None,
             agent_id: None,
+            loaded_nested_memory_paths: std::collections::HashSet::new(),
         });
+
+        // Snapshot parent context fields to thread into subagent closures
+        let parent_can_use_tool: Option<
+            std::sync::Arc<dyn Fn(ToolDefinition, serde_json::Value) -> PermissionResult + Send + Sync>,
+        > = {
+            let allowed_tools = inner.allowed_tools.clone();
+            let disallowed_tools = inner.disallowed_tools.clone();
+            if !allowed_tools.is_empty() || !disallowed_tools.is_empty() {
+                Some(std::sync::Arc::new(
+                    move |tool_def: ToolDefinition, _input: serde_json::Value| {
+                        if !allowed_tools.is_empty() && !allowed_tools.contains(&tool_def.name) {
+                            return PermissionResult::Deny(PermissionDenyDecision::new(
+                                &format!("Tool '{}' is not in the allowed tools list", tool_def.name),
+                                PermissionDecisionReason::Other { reason: "allowed tools filter".to_string() },
+                            ));
+                        }
+                        if disallowed_tools.contains(&tool_def.name) {
+                            return PermissionResult::Deny(PermissionDenyDecision::new(
+                                &format!("Tool '{}' is in the disallowed tools list", tool_def.name),
+                                PermissionDecisionReason::Other { reason: "disallowed tools filter".to_string() },
+                            ));
+                        }
+                        PermissionResult::Allow(PermissionAllowDecision::default())
+                    },
+                ))
+            } else {
+                None
+            }
+        };
+        let parent_on_event = inner.on_event.clone();
+        let parent_thinking = inner.thinking.clone();
 
         // Register all tool executors (including Bash, Read, Write, etc.)
         register_all_tool_executors(&mut engine);
@@ -1168,6 +1212,9 @@ impl Agent {
             let base_url = base_url.clone();
             let model = model.clone();
             let subagent_abort = subagent_abort.clone();
+            let parent_can_use_tool = parent_can_use_tool.clone();
+            let parent_on_event = parent_on_event.clone();
+            let parent_thinking = parent_thinking.clone();
 
             Box::pin(async move {
                 // Extract ALL parameters from input
@@ -1233,12 +1280,13 @@ impl Agent {
                     fallback_model: None,
                     user_context: std::collections::HashMap::new(),
                     system_context: std::collections::HashMap::new(),
-                    can_use_tool: None,
-                    on_event: None,
-                    thinking: None,
+                    can_use_tool: parent_can_use_tool,
+                    on_event: parent_on_event,
+                    thinking: parent_thinking,
                     abort_controller: Some(subagent_abort.clone()),
                     token_budget: None,
                     agent_id: agent_name.clone().or_else(|| Some(description.to_string())),
+                    loaded_nested_memory_paths: std::collections::HashSet::new(),
                 });
                 register_all_tool_executors(&mut sub_engine);
 
@@ -1473,6 +1521,8 @@ impl Agent {
             let engine_user_context = eng.config.user_context.clone();
             let engine_system_context = eng.config.system_context.clone();
             let engine_thinking = eng.config.thinking.clone();
+            let engine_can_use_tool = eng.config.can_use_tool.clone();
+            let engine_on_event = eng.config.on_event.clone();
 
             let agent_tool_executor = move |input: serde_json::Value,
                                             _ctx: &ToolContext|
@@ -1489,6 +1539,8 @@ impl Agent {
                 let parent_user_context = engine_user_context.clone();
                 let parent_system_context = engine_system_context.clone();
                 let parent_thinking = engine_thinking.clone();
+                let parent_can_use_tool = engine_can_use_tool.clone();
+                let parent_on_event = engine_on_event.clone();
 
                 Box::pin(async move {
                     let description = input["description"].as_str().unwrap_or("subagent").to_string();
@@ -1552,12 +1604,13 @@ impl Agent {
                         fallback_model: None,
                         user_context: std::collections::HashMap::new(),
                         system_context: std::collections::HashMap::new(),
-                        can_use_tool: None,
-                        on_event: None,
-                        thinking: None,
+                        can_use_tool: parent_can_use_tool,
+                        on_event: parent_on_event,
+                        thinking: parent_thinking.clone(),
                         abort_controller: Some(subagent_abort.clone()),
                         token_budget: None,
                         agent_id: agent_name.clone().or_else(|| Some(description.to_string())),
+                        loaded_nested_memory_paths: std::collections::HashSet::new(),
                     });
                     register_all_tool_executors(&mut sub_engine);
 

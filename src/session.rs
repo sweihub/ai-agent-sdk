@@ -1007,7 +1007,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_append_session_entry() {
-        let session_id = format!("ndjson-append-test-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos());
+        let session_id = format!("ndjson-append-test-{}", uuid::Uuid::new_v4());
         let msg = Message {
             role: crate::types::MessageRole::User,
             content: "first message".to_string(),
@@ -1049,7 +1049,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_load_session_jsonl() {
-        let session_id = format!("ndjson-load-test-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos());
+        let session_id = format!("ndjson-load-test-{}", uuid::Uuid::new_v4());
 
         // Create session dir and append entries
         let dir = get_session_path(&session_id);
@@ -1082,7 +1082,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_append_session_message() {
-        let session_id = format!("ndjson-append-msg-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos());
+        let session_id = format!("ndjson-append-msg-{}", uuid::Uuid::new_v4());
 
         let msg = Message {
             role: crate::types::MessageRole::User,
@@ -1100,18 +1100,14 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_load_empty_jsonl() {
-        let session_id = format!("ndjson-empty-test-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos());
+        let session_id = format!("ndjson-empty-test-{}", uuid::Uuid::new_v4());
         let result = load_session_jsonl(&session_id).await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_enqueue_and_drain() {
-        // Reset global state for test isolation
-        SESSION_PENDING.lock().unwrap().clear();
-        SESSION_DRAINING.store(false, std::sync::atomic::Ordering::Relaxed);
-
-        let session_id = format!("ndjson-enqueue-test-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos());
+        let session_id = format!("ndjson-enqueue-test-{}", uuid::Uuid::new_v4());
 
         SessionWriter::enqueue(&session_id, "{\"test\":1}".to_string());
         SessionWriter::enqueue(&session_id, "{\"test\":2}".to_string());
@@ -1126,18 +1122,17 @@ mod ndjson_tests {
         assert!(content.contains("{\"test\":1}"));
         assert!(content.contains("{\"test\":2}"));
 
-        // Cleanup
+        // Cleanup: remove only our session from pending + disk
+        {
+            let mut pending = SESSION_PENDING.lock().unwrap();
+            pending.remove(&session_id);
+        }
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
-        SESSION_PENDING.lock().unwrap().clear();
-        SESSION_DRAINING.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[tokio::test]
     async fn test_enqueue_session_message() {
-        SESSION_PENDING.lock().unwrap().clear();
-        SESSION_DRAINING.store(false, std::sync::atomic::Ordering::Relaxed);
-
-        let session_id = format!("ndjson-enqueue-msg-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos());
+        let session_id = format!("ndjson-enqueue-msg-{}", uuid::Uuid::new_v4());
 
         let msg = Message {
             role: crate::types::MessageRole::User,
@@ -1154,19 +1149,18 @@ mod ndjson_tests {
         let content = fs::read_to_string(&path).await.unwrap();
         assert!(content.contains("streaming test"));
 
-        // Cleanup
+        // Cleanup: remove only our session from pending + disk
+        {
+            let mut pending = SESSION_PENDING.lock().unwrap();
+            pending.remove(&session_id);
+        }
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
-        SESSION_PENDING.lock().unwrap().clear();
-        SESSION_DRAINING.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[tokio::test]
     async fn test_multiple_sessions_drain() {
-        SESSION_PENDING.lock().unwrap().clear();
-        SESSION_DRAINING.store(false, std::sync::atomic::Ordering::Relaxed);
-
-        let session_id1 = format!("ndjson-multi-1-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos());
-        let session_id2 = format!("ndjson-multi-2-{}", std::time::SystemTime::now().elapsed().unwrap().as_nanos());
+        let session_id1 = format!("ndjson-multi-1-{}", uuid::Uuid::new_v4());
+        let session_id2 = format!("ndjson-multi-2-{}", uuid::Uuid::new_v4());
 
         SessionWriter::enqueue(&session_id1, "{\"s\":1}".to_string());
         SessionWriter::enqueue(&session_id2, "{\"s\":2}".to_string());
@@ -1182,10 +1176,13 @@ mod ndjson_tests {
         assert_eq!(lines1.len(), 2);
         assert_eq!(lines2.len(), 1);
 
-        // Cleanup
+        // Cleanup: remove only our sessions from pending + disk
+        {
+            let mut pending = SESSION_PENDING.lock().unwrap();
+            pending.remove(&session_id1);
+            pending.remove(&session_id2);
+        }
         let _ = fs::remove_dir_all(get_session_path(&session_id1)).await;
         let _ = fs::remove_dir_all(get_session_path(&session_id2)).await;
-        SESSION_PENDING.lock().unwrap().clear();
-        SESSION_DRAINING.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }

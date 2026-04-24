@@ -28,6 +28,7 @@ async fn test_engine_creation() {
         abort_controller: None,
         token_budget: None,
         agent_id: None,
+        loaded_nested_memory_paths: std::collections::HashSet::new(),
     });
     assert_eq!(engine.get_turn_count(), 0);
 }
@@ -53,6 +54,7 @@ async fn test_engine_submit_message() {
         abort_controller: None,
         token_budget: None,
         agent_id: None,
+        loaded_nested_memory_paths: std::collections::HashSet::new(),
     });
 
     let result = engine.submit_message("Hello").await;
@@ -451,6 +453,7 @@ async fn test_engine_with_tools_config() {
         abort_controller: None,
         token_budget: None,
         agent_id: None,
+        loaded_nested_memory_paths: std::collections::HashSet::new(),
     });
 
     // Verify tools are stored in config
@@ -479,6 +482,7 @@ async fn test_engine_system_prompt_includes_tool_guidance() {
         abort_controller: None,
         token_budget: None,
         agent_id: None,
+        loaded_nested_memory_paths: std::collections::HashSet::new(),
     });
 
     // Verify system prompt is set
@@ -591,6 +595,7 @@ async fn test_engine_message_history_with_tool_calls() {
         abort_controller: None,
         token_budget: None,
         agent_id: None,
+        loaded_nested_memory_paths: std::collections::HashSet::new(),
     });
 
     // Add user message

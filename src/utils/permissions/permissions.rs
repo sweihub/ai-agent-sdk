@@ -191,12 +191,38 @@ pub fn create_permission_request_message(
     )
 }
 
-/// Checks if the entire tool matches a rule.
+/// Checks if a tool name matches a rule using 4-step matching.
+///
+/// Step 1: Exact match (`Bash` matches `Bash`)
+/// Step 2: MCP server-prefix match (`mcp__fs_` blocks all tools starting with `mcp__fs_`)
+/// Step 3: MCP tool-prefix match (`mcp__fs_` blocks all tools starting with `mcp__fs_`)
+/// Step 4: Wildcard (`*` matches everything)
+///
+/// Rules with content patterns (e.g., `Bash(ls)`) do not match at the
+/// tool-name level — they require content-level evaluation.
 fn tool_matches_rule(tool_name: &str, rule: &PermissionRule) -> bool {
     if rule.rule_value.rule_content.is_some() {
         return false;
     }
-    rule.rule_value.tool_name == tool_name
+    let rule_tool = &rule.rule_value.tool_name;
+
+    // Step 1: Exact match
+    if rule_tool == tool_name {
+        return true;
+    }
+    // Step 2: MCP server-prefix match (rule ends with "__")
+    if rule_tool.ends_with("__") && tool_name.starts_with(rule_tool.as_str()) {
+        return true;
+    }
+    // Step 3: MCP tool-prefix match (rule ends with "_")
+    if rule_tool.ends_with('_') && tool_name.starts_with(rule_tool.as_str()) {
+        return true;
+    }
+    // Step 4: Wildcard
+    if rule_tool == "*" {
+        return true;
+    }
+    false
 }
 
 /// Checks if a tool is in the always-allow rules.

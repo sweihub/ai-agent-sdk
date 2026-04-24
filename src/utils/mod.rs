@@ -13,6 +13,10 @@ pub mod env_utils;
 pub mod errors;
 pub mod file_state_cache;
 pub mod forked_agent;
+pub mod git;
+pub mod git_diff;
+pub mod git_settings;
+pub mod github_repo_path_mapping;
 pub mod hooks;
 pub mod messages;
 pub mod model;
@@ -23,6 +27,7 @@ pub mod plugins;
 pub mod process_user_input;
 pub mod query_helpers;
 pub mod shell;
+pub mod side_query;
 pub mod swarm;
 pub mod system_theme;
 pub mod task;
@@ -78,6 +83,12 @@ pub use shell::{
     BashShellProvider, PowerShellProvider,
     shell_provider::{ShellError, ShellExecCommand},
     shell_tool_utils::{SHELL_TYPES, ShellType},
+};
+
+// Re-export side_query utilities
+pub use side_query::{
+    SideQueryMemorySelection, SideQueryOptions, side_query, side_query_simple,
+    side_query_with_tools,
 };
 
 // Re-export tempfile utilities

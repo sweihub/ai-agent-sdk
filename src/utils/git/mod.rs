@@ -1,4 +1,6 @@
 // Source: /data/home/swei/claudecode/openclaudecode/src/utils/git.ts
+pub mod gitignore;
+
 use std::process::Command;
 
 pub fn git_exe() -> String {

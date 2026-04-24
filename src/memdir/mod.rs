@@ -6,6 +6,12 @@
 //! original Claude Code project.
 
 pub mod find_relevant_memories;
+
+pub use find_relevant_memories::{
+    FindRelevantMemoriesConfig, RelevantMemory, find_relevant_memories,
+    find_relevant_memories_with_config,
+};
+
 pub mod memdir;
 pub mod memory_age;
 pub mod memory_scan;

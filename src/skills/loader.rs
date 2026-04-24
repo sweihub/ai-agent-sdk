@@ -4,6 +4,7 @@
 //! Supports conditional skills with paths frontmatter for dynamic activation.
 
 use crate::AgentError;
+use crate::utils::git::gitignore::is_path_gitignored;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -300,7 +301,7 @@ pub fn load_skill_from_dir(dir_path: &Path) -> Result<LoadedSkill, AgentError> {
 }
 
 /// Load all skills from a skills directory (skill-name/SKILL.md format)
-pub fn load_skills_from_dir(base_path: &Path) -> Result<Vec<LoadedSkill>, AgentError> {
+pub fn load_skills_from_dir(base_path: &Path, cwd: &Path) -> Result<Vec<LoadedSkill>, AgentError> {
     if !base_path.exists() {
         return Ok(Vec::new());
     }
@@ -314,6 +315,15 @@ pub fn load_skills_from_dir(base_path: &Path) -> Result<Vec<LoadedSkill>, AgentE
         let path = entry.path();
 
         if path.is_dir() {
+            // Skip skill directories that are gitignored
+            if is_path_gitignored(&path, cwd) {
+                log::debug!(
+                    "[skills] Skipped gitignored skill dir: {}",
+                    path.display()
+                );
+                continue;
+            }
+
             if let Ok(skill) = load_skill_from_dir(&path) {
                 skills.push(skill);
             }
@@ -566,7 +576,7 @@ pub fn load_all_skills(cwd: &str) -> Result<Vec<UnifiedSkill>, AgentError> {
 
     // 2. Load user skills (~/.ai/skills)
     if let Some(user_dir) = get_user_skills_dir() {
-        if let Ok(user_skills) = load_skills_from_dir(&user_dir) {
+        if let Ok(user_skills) = load_skills_from_dir(&user_dir, Path::new(cwd)) {
             for us in user_skills {
                 skill_map.insert(
                     us.metadata.name.clone(),
@@ -586,7 +596,7 @@ pub fn load_all_skills(cwd: &str) -> Result<Vec<UnifiedSkill>, AgentError> {
 
     // 3. Load project skills (<cwd>/.ai/skills)
     let project_dir = get_project_skills_dir(cwd);
-    if let Ok(project_skills) = load_skills_from_dir(&project_dir) {
+    if let Ok(project_skills) = load_skills_from_dir(&project_dir, Path::new(cwd)) {
         for ps in project_skills {
             skill_map.insert(
                 ps.metadata.name.clone(),
@@ -856,5 +866,60 @@ map_val:
 
         let skill = load_skill_from_dir(&skill_dir).unwrap();
         assert!(skill.metadata.hooks.is_none());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_skips_gitignored() {
+        use std::io::Write;
+
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path();
+
+        // Initialize a git repo
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(repo_root)
+            .output()
+            .expect("git init failed");
+
+        // Create .gitignore that ignores "ignored-skill"
+        let gitignore_path = repo_root.join(".gitignore");
+        let mut gitignore_file = std::fs::File::create(&gitignore_path).unwrap();
+        writeln!(gitignore_file, "ignored-skill/").unwrap();
+        drop(gitignore_file);
+
+        // Create skills directory
+        let skills_dir = repo_root.join(".ai").join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create a normal skill (should be loaded)
+        let normal_skill_dir = skills_dir.join("normal-skill");
+        std::fs::create_dir_all(&normal_skill_dir).unwrap();
+        let mut normal_skill_file =
+            std::fs::File::create(normal_skill_dir.join("SKILL.md")).unwrap();
+        writeln!(normal_skill_file, "---").unwrap();
+        writeln!(normal_skill_file, "description: Normal skill").unwrap();
+        writeln!(normal_skill_file, "---").unwrap();
+        writeln!(normal_skill_file, "Normal skill content").unwrap();
+        drop(normal_skill_file);
+
+        // Create a gitignored skill (should be skipped)
+        let ignored_skill_dir = skills_dir.join("ignored-skill");
+        std::fs::create_dir_all(&ignored_skill_dir).unwrap();
+        let mut ignored_skill_file =
+            std::fs::File::create(ignored_skill_dir.join("SKILL.md")).unwrap();
+        writeln!(ignored_skill_file, "---").unwrap();
+        writeln!(ignored_skill_file, "description: Ignored skill").unwrap();
+        writeln!(ignored_skill_file, "---").unwrap();
+        writeln!(ignored_skill_file, "Ignored skill content").unwrap();
+        drop(ignored_skill_file);
+
+        // Load skills - pass repo_root as cwd for git check-ignore context
+        let skills =
+            load_skills_from_dir(&skills_dir, repo_root).expect("failed to load skills");
+
+        // Should have exactly 1 skill (the normal one), not the ignored one
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].metadata.name, "normal-skill");
     }
 }
