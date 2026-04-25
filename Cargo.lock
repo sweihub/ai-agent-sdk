@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "ai-agent"
-version = "0.65.0"
+version = "0.65.1"
 dependencies = [
  "anyhow",
  "atty",

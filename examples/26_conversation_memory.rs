@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Agent: {}\n", result1.text.trim());
 
     // Verify message history is accumulating
-    let messages = agent.get_messages().await;
+    let messages = agent.get_messages();
     println!("(Message history: {} messages so far)\n", messages.len());
 
     println!("=== Turn 2: Ask the agent what my favorite color is ===\n");
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Agent: {}\n", result2.text.trim());
 
     // Final message count
-    let final_messages = agent.get_messages().await;
+    let final_messages = agent.get_messages();
     println!("(Final message count: {} messages)", final_messages.len());
 
     // Verify the response mentions "blue"

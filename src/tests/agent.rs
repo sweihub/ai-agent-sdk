@@ -481,7 +481,7 @@ async fn test_agent_remembers_context_across_queries() {
             continue;
         }
 
-        let messages = agent.get_messages().await;
+        let messages = agent.get_messages();
         if messages.len() < 4 {
             last_error = format!("Only {} messages, attempt {}", messages.len(), attempt);
             continue;
@@ -552,7 +552,7 @@ async fn test_tool_search_discovers_and_uses_deferred_tool() {
 
     // Verify ToolSearch was used to discover WebSearch by checking message history.
     // The LLM should discover WebSearch via ToolSearch before using it to answer the question.
-    let messages = agent.get_messages().await;
+    let messages = agent.get_messages();
     let has_tool_search_call = messages
         .iter()
         .any(|m| m.content.contains("ToolSearch") || m.content.contains("WebSearch"));
@@ -936,14 +936,14 @@ async fn test_persisted_engine_accumulates_messages() {
 
     // Before any query, message list should be empty
     assert!(
-        agent.get_messages().await.is_empty(),
+        agent.get_messages().is_empty(),
         "Messages should be empty before first query"
     );
 
     // First call — store the message count after
     let result1 = agent.query("Say 'Hello' and nothing else.").await;
     assert!(result1.is_ok(), "First query should succeed");
-    let msgs1 = agent.get_messages().await;
+    let msgs1 = agent.get_messages();
     assert!(
         msgs1.len() >= 2,
         "After first query: expected >=2 messages, got {}",
@@ -953,7 +953,7 @@ async fn test_persisted_engine_accumulates_messages() {
     // Second call — message list must be longer (accumulates)
     let result2 = agent.query("Repeat back what I just said to you.").await;
     assert!(result2.is_ok(), "Second query should succeed");
-    let msgs2 = agent.get_messages().await;
+    let msgs2 = agent.get_messages();
     assert!(
         msgs2.len() > msgs1.len(),
         "After second query: expected {} > {} messages (messages should accumulate)",
@@ -964,7 +964,7 @@ async fn test_persisted_engine_accumulates_messages() {
     // Third call — still more messages
     let result3 = agent.query("Now say goodbye.").await;
     assert!(result3.is_ok(), "Third query should succeed");
-    let msgs3 = agent.get_messages().await;
+    let msgs3 = agent.get_messages();
     assert!(
         msgs3.len() > msgs2.len(),
         "After third query: expected {} > {} messages (messages should keep accumulating)",
@@ -1001,21 +1001,21 @@ async fn test_reset_clears_engine_state() {
 
     // First query
     let _r1 = agent.query("Say 'ResetTest'.").await;
-    let msgs_before = agent.get_messages().await;
+    let msgs_before = agent.get_messages();
     assert!(msgs_before.len() >= 2);
 
     // Reset
-    agent.reset().await;
+    agent.reset();
 
     // After reset, message list must be empty
     assert!(
-        agent.get_messages().await.is_empty(),
+        agent.get_messages().is_empty(),
         "Messages should be empty after reset"
     );
 
     // Second query should work fine (engine recreated)
     let _r2 = agent.query("Say 'PostReset'.").await;
-    let msgs_after = agent.get_messages().await;
+    let msgs_after = agent.get_messages();
     assert!(
         msgs_after.len() >= 2,
         "After reset + query: expected >=2 messages, got {}",
@@ -1024,7 +1024,7 @@ async fn test_reset_clears_engine_state() {
 
     // Agent can continue calling after reset (engine was recreated)
     let _r3 = agent.query("Say 'Again'.").await;
-    let msgs_after2 = agent.get_messages().await;
+    let msgs_after2 = agent.get_messages();
     assert!(
         msgs_after2.len() > msgs_after.len(),
         "Agent should accumulate messages again after reset"
@@ -1061,7 +1061,7 @@ async fn test_persisted_engine_llm_remembers_context() {
     .await
     .expect("Turn 1 timed out after 120s")
     .expect("Turn 1 should succeed");
-    assert!(agent.get_messages().await.len() >= 2);
+    assert!(agent.get_messages().len() >= 2);
 
     // Turn 2: recall task — tests that turn 1 is in context
     let r2 = tokio::time::timeout(
@@ -1076,7 +1076,7 @@ async fn test_persisted_engine_llm_remembers_context() {
 
     // The key assertion: message count proves context is preserved across query() calls.
     // The LLM content check is best-effort — under rate limiting it may paraphrase.
-    let msgs2 = agent.get_messages().await;
+    let msgs2 = agent.get_messages();
     assert!(
         msgs2.len() >= 4,
         "After 2 turns: expected >=4 messages, got {}. Turn 2 response: '{}'",
@@ -1095,7 +1095,7 @@ async fn test_persisted_engine_llm_remembers_context() {
     let answer3 = r3.text.to_lowercase();
     println!("LLM remembers turn 2: '{}'", answer3);
 
-    let msgs3 = agent.get_messages().await;
+    let msgs3 = agent.get_messages();
     assert!(
         msgs3.len() >= 6,
         "After 3 turns: expected >=6 messages, got {}. Turn 3 response: '{}'",
@@ -1112,8 +1112,8 @@ async fn test_persisted_engine_llm_remembers_context() {
 /// Test that an agent with can_use_tool (via allowed/disallowed tools) is configured
 /// correctly on its QueryEngine. This verifies the parent-side of the context
 /// inheritance chain.
-#[tokio::test]
-async fn test_agent_can_use_tool_config() {
+#[test]
+fn test_agent_can_use_tool_config() {
     let agent = Agent::new("claude-sonnet-4-6")
         .allowed_tools(vec!["Bash".to_string()]);
 
@@ -1124,8 +1124,8 @@ async fn test_agent_can_use_tool_config() {
 }
 
 /// Test that an agent with on_event and thinking configured stores them correctly.
-#[tokio::test]
-async fn test_agent_event_and_thinking_config() {
+#[test]
+fn test_agent_event_and_thinking_config() {
     use std::sync::{Arc, Mutex};
     let events: Arc<Mutex<Vec<crate::types::AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -1211,8 +1211,8 @@ async fn test_subagent_inherits_parent_context() {
 
 /// Test that disallowed_tools configuration on the parent agent is preserved.
 /// Subagents created by the parent should inherit this restriction.
-#[tokio::test]
-async fn test_agent_disallowed_tools_config() {
+#[test]
+fn test_agent_disallowed_tools_config() {
     let agent = Agent::new("claude-sonnet-4-6")
         .disallowed_tools(vec!["Bash".to_string(), "FileWrite".to_string()]);
 
@@ -1435,7 +1435,7 @@ async fn test_recap_empty_with_empty_engine() {
 
     // query() initializes the engine, but use a prompt that we can abort immediately
     // Instead, verify via get_messages() — no engine means no messages
-    let messages = agent.get_messages().await;
+    let messages = agent.get_messages();
     assert!(messages.is_empty());
 
     let result = agent.recap().await;

@@ -40,7 +40,7 @@ use crate::permission::{PermissionResult, PermissionAllowDecision, PermissionDen
 use crate::types::AgentEvent;
 use crate::types::*;
 use std::sync::Arc;
-use tokio::sync::{Mutex as TokioMutex, mpsc};
+use tokio::sync::mpsc;
 
 /// Register all built-in tool executors
 pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
@@ -826,10 +826,11 @@ pub(crate) struct AgentInner {
     session_id: String,
     abort_controller: std::sync::Arc<crate::utils::AbortController>,
     /// Persisted QueryEngine for multi-turn reuse (matches TypeScript pattern).
-    /// Shared via Arc<TokioMutex> so spawned tasks from query() can access
-    /// the same conversation state (messages, usage, turns).
+    /// Shared via Arc<parking_lot::RwLock<QueryEngine>> so spawned tasks from
+    /// query() can access the same conversation state (messages, usage, turns).
+    /// Write lock held for the duration of query(); read locks for get_messages().
     /// `None` until first query — lazily initialized.
-    engine: Option<Arc<TokioMutex<QueryEngine>>>,
+    engine: Option<Arc<parking_lot::RwLock<QueryEngine>>>,
     /// Event broadcast channels for subscribe() callers
     broadcasters: EventBroadcasters,
 }
@@ -1002,7 +1003,7 @@ impl Agent {
 
     /// Uses interior mutability — takes `&self` so the agent can be shared across tasks.
     /// Lazily creates the QueryEngine on first query.
-    async fn init_engine(&self) {
+    fn init_engine(&self) {
         let mut inner = self.inner.lock();
         if inner.engine.is_none() {
             let cwd = inner.cwd.clone();
@@ -1063,7 +1064,7 @@ impl Agent {
                 register_hooks_from_skills(&_set_app_state, &session_id, &skills);
             }
 
-            inner.engine = Some(Arc::new(TokioMutex::new(engine)));
+            inner.engine = Some(Arc::new(parking_lot::RwLock::new(engine)));
         }
     }
 
@@ -1098,13 +1099,13 @@ impl Agent {
     /// Get all messages in the conversation history.
     /// Delegates to the persisted QueryEngine which owns the message state
     /// (matches TypeScript: engine.mutableMessages).
-    pub async fn get_messages(&self) -> Vec<Message> {
+    pub fn get_messages(&self) -> Vec<Message> {
         let engine_opt = {
             let inner = self.inner.lock();
             inner.engine.clone()
         };
         if let Some(engine) = engine_opt {
-            let eng = engine.lock().await;
+            let eng = engine.read();
             eng.get_messages()
         } else {
             Vec::new()
@@ -1320,7 +1321,7 @@ impl Agent {
     ///
     /// Takes `&self` (interior mutability) — the agent can be shared across tasks.
     pub async fn query(&self, prompt: &str) -> Result<QueryResult, AgentError> {
-        self.init_engine().await;
+        self.init_engine();
 
         // Clone all data from AgentInner before any .await (MutexGuard is not Send).
         // Single lock acquisition.
@@ -1342,7 +1343,7 @@ impl Agent {
 
         let start = std::time::Instant::now();
         let (response_text, exit_reason, current_model, usage, turns) = {
-            let mut eng = engine.lock().await;
+            let mut eng = engine.write();
 
             // Update per-query config
             eng.config.system_prompt = system_prompt;
@@ -1432,13 +1433,13 @@ impl Agent {
     ///
     /// Clears all messages, usage tracking, and turn count. This starts a fresh
     /// conversation while preserving model, API key, tools, and other settings.
-    pub async fn reset(&self) {
+    pub fn reset(&self) {
         let engine_opt = {
             let inner = self.inner.lock();
             inner.engine.clone()
         };
         if let Some(engine) = engine_opt {
-            let mut eng = engine.lock().await;
+            let mut eng = engine.write();
             eng.reset();
         }
     }
@@ -1521,7 +1522,7 @@ impl Agent {
             inner.engine.clone()
         };
         let messages = if let Some(engine) = engine_opt.as_ref() {
-            let eng = engine.lock().await;
+            let eng = engine.read();
             eng.get_messages()
         } else {
             Vec::new()

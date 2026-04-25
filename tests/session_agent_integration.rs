@@ -256,8 +256,8 @@ async fn test_delete_session() {
 // ============================================================================
 
 /// An agent gets a UUID session ID and can be inspected.
-#[tokio::test]
-async fn test_agent_creates_session_id() {
+#[test]
+fn test_agent_creates_session_id() {
     let agent = Agent::new("test-model").max_turns(5);
     let sid = agent.get_session_id();
     assert!(!sid.is_empty());
@@ -290,7 +290,7 @@ async fn test_agent_accumulates_messages_on_prompt() {
     let resp = result.unwrap();
     assert!(!resp.text.is_empty());
 
-    let messages = agent.get_messages().await;
+    let messages = agent.get_messages();
     assert!(
         messages.len() >= 2,
         "Should have at least user+assistant messages, got {}",
@@ -402,12 +402,12 @@ async fn test_agent_session_persists_to_disk() {
         .system_prompt("You are a test assistant.");
 
     let agent_sid = agent.get_session_id().to_string();
-    let messages_before = agent.get_messages().await.len();
+    let messages_before = agent.get_messages().len();
 
     let result = agent.query("Say 'PersistTest' and nothing else.").await;
 
     assert!(result.is_ok(), "Prompt should succeed");
-    let messages_after = agent.get_messages().await.len();
+    let messages_after = agent.get_messages().len();
     assert!(
         messages_after > messages_before,
         "Agent should have accumulated messages"
@@ -472,8 +472,8 @@ async fn test_agent_session_continuation() {
     assert!(!resp2.text.is_empty());
 
     // Both agents should have accumulated messages
-    let msgs1 = agent1.get_messages().await;
-    let msgs2 = agent2.get_messages().await;
+    let msgs1 = agent1.get_messages();
+    let msgs2 = agent2.get_messages();
     assert!(msgs1.len() >= 2, "Agent1 should have messages");
     assert!(msgs2.len() >= 2, "Agent2 should have messages");
 }
@@ -913,7 +913,7 @@ async fn test_agent_message_accumulation() {
     assert!(!resp.text.is_empty(), "Response should not be empty");
 
     // Agent should have accumulated at least user + assistant messages
-    let messages = agent.get_messages().await;
+    let messages = agent.get_messages();
     assert!(
         messages.len() >= 2,
         "Expected at least 2 messages, got {}",
@@ -943,7 +943,7 @@ async fn test_token_estimation_on_agent_messages() {
         .query("Say 'TokenEstimationTest' and nothing else.")
         .await;
 
-    let messages = agent.get_messages().await;
+    let messages = agent.get_messages();
     let token_count = ai_agent::compact::estimate_token_count(&messages, 20_000);
     assert!(token_count > 0, "Token count should be positive");
     // estimate_token_count adds max_output_tokens (20000) as buffer, so total is ~20000+ for short convos

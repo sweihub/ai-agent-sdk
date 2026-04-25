@@ -57,12 +57,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model: model.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
-        message_count: agent.get_messages().await.len() as u32,
+        message_count: agent.get_messages().len() as u32,
         summary: Some("Demo session about France".to_string()),
         tag: Some("demo".to_string()),
     };
 
-    session::save_session(session_id, agent.get_messages().await.to_vec(), Some(metadata)).await?;
+    session::save_session(session_id, agent.get_messages().to_vec(), Some(metadata)).await?;
     println!("Session saved successfully!");
     println!();
 

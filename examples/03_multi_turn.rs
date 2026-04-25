@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let r3 = agent.query("Delete that file with Bash. Confirm.").await?;
     println!("  {}\n", r3.text);
 
-    println!("Session history: {} messages", agent.get_messages().await.len());
+    println!("Session history: {} messages", agent.get_messages().len());
 
     Ok(())
 }

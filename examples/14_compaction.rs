@@ -51,7 +51,7 @@ Sunt in culpa qui officia deserunt mollit anim id est laborum.";
         let result = agent.query(&prompt).await?;
 
         // Show message count
-        println!("Messages: {}", agent.get_messages().await.len());
+        println!("Messages: {}", agent.get_messages().len());
         println!(
             "Response: {}\n",
             result.text.trim().lines().next().unwrap_or("")
@@ -63,7 +63,7 @@ Sunt in culpa qui officia deserunt mollit anim id est laborum.";
     let result = agent
         .query("What did I ask you to remember in turn 1?")
         .await?;
-    println!("Messages: {}", agent.get_messages().await.len());
+    println!("Messages: {}", agent.get_messages().len());
     println!(
         "Response: {}\n",
         result.text.trim().lines().next().unwrap_or("")
