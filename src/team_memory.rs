@@ -1072,4 +1072,10 @@ pub fn get_last_sync_error() -> Option<String> {
     LAST_SYNC_ERROR.lock().unwrap().clone()
 }
 
+/// Reset team memory globals for testing
+pub fn reset_team_memory_for_testing() {
+    disable_team_memory();
+    *LAST_SYNC_ERROR.lock().unwrap() = None;
+}
+
 // ─── Tests ─────────────────────────────────────────────────────

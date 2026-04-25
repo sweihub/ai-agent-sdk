@@ -10,8 +10,10 @@
 
 use ai_agent::Agent;
 use ai_agent::env::EnvConfig;
+use ai_agent::test_utils::clear_all_test_state;
 use ai_agent::types::{Message, MessageRole, ToolDefinition, ToolInputSchema};
 use std::sync::Mutex;
+use uuid::Uuid;
 
 // ============================================================================
 // Helpers
@@ -42,16 +44,18 @@ fn sample_messages() -> Vec<Message> {
 // ============================================================================
 
 /// Saving and loading a session round-trips messages correctly.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_session_save_load_roundtrip() {
-    let session_id = "int-session-roundtrip";
+    let _session_id = format!("int-session-roundtrip-{}", Uuid::new_v4());
+    let session_id = _session_id.as_str();
     let messages = sample_messages();
 
-    ai_agent::session::save_session(session_id, messages.clone(), None)
+    ai_agent::session::save_session(&session_id, messages.clone(), None)
         .await
         .unwrap();
 
-    let loaded = ai_agent::session::load_session(session_id).await.unwrap();
+    let loaded = ai_agent::session::load_session(&session_id).await.unwrap();
     assert!(loaded.is_some());
     let data = loaded.unwrap();
     assert_eq!(data.messages.len(), 2);
@@ -59,10 +63,11 @@ async fn test_session_save_load_roundtrip() {
     assert_eq!(data.messages[0].content, "Hello, this is a test message.");
     assert_eq!(data.messages[1].content, "Hi there! How can I help you?");
 
-    ai_agent::session::delete_session(session_id).await.unwrap();
+    ai_agent::session::delete_session(&session_id).await.unwrap();
 }
 
 /// Loading a nonexistent session returns None.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_load_nonexistent_session() {
     let loaded = ai_agent::session::load_session("int-nonexistent-xyz")
@@ -73,8 +78,10 @@ async fn test_load_nonexistent_session() {
 
 /// Appending a message to an existing session increases message count.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_append_to_session() {
-    let sid = "int-append-session";
+    let _sid = format!("int-append-{}", Uuid::new_v4());
+    let sid = _sid.as_str();
     ai_agent::session::save_session(sid, vec![], None)
         .await
         .unwrap();
@@ -99,8 +106,10 @@ async fn test_append_to_session() {
 
 /// Forking a session copies all messages to a new session ID.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_fork_session() {
-    let source = "int-fork-source";
+    let _source = format!("int-fork-source-{}", Uuid::new_v4());
+    let source = _source.as_str();
     ai_agent::session::save_session(
         source,
         vec![
@@ -142,8 +151,10 @@ async fn test_fork_session() {
 
 /// Renaming a session updates its summary field.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_rename_session() {
-    let sid = "int-rename-session";
+    let _sid = format!("int-rename-{}", Uuid::new_v4());
+    let sid = _sid.as_str();
     ai_agent::session::save_session(sid, vec![], None)
         .await
         .unwrap();
@@ -166,8 +177,10 @@ async fn test_rename_session() {
 
 /// Tagging a session sets its tag field.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_tag_session() {
-    let sid = "int-tag-session";
+    let _sid = format!("int-tag-{}", Uuid::new_v4());
+    let sid = _sid.as_str();
     ai_agent::session::save_session(sid, vec![], None)
         .await
         .unwrap();
@@ -195,9 +208,12 @@ async fn test_tag_session() {
 
 /// Listing sessions returns saved sessions sorted by updated_at desc.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_list_sessions() {
-    let sid1 = "int-list-1";
-    let sid2 = "int-list-2";
+    let _sid1 = format!("int-list-1-{}", Uuid::new_v4());
+    let sid1 = _sid1.as_str();
+    let _sid2 = format!("int-list-2-{}", Uuid::new_v4());
+    let sid2 = _sid2.as_str();
     ai_agent::session::save_session(sid1, vec![], None)
         .await
         .unwrap();
@@ -216,8 +232,10 @@ async fn test_list_sessions() {
 
 /// Deleting a session removes it from disk.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_delete_session() {
-    let sid = "int-delete-session";
+    let _sid = format!("int-delete-{}", Uuid::new_v4());
+    let sid = _sid.as_str();
     ai_agent::session::save_session(sid, sample_messages(), None)
         .await
         .unwrap();
@@ -250,7 +268,9 @@ fn test_agent_creates_session_id() {
 
 /// Agent accumulates messages over multiple prompts.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_agent_accumulates_messages_on_prompt() {
+    clear_all_test_state();
     if !has_required_env_vars() {
         eprintln!("Skipping: no API config");
         return;
@@ -284,6 +304,7 @@ async fn test_agent_accumulates_messages_on_prompt() {
 
 /// Agent emits Done event on prompt completion.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_agent_emits_done_event() {
     if !has_required_env_vars() {
         eprintln!("Skipping: no API config");
@@ -333,6 +354,7 @@ async fn test_agent_emits_done_event() {
 
 /// Agent with max_turns=1 completes or hits the limit gracefully.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_agent_max_turns_reason() {
     if !has_required_env_vars() {
         eprintln!("Skipping: no API config");
@@ -365,6 +387,7 @@ async fn test_agent_max_turns_reason() {
 
 /// After an agent prompt, the session data should be loadable from disk.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_agent_session_persists_to_disk() {
     if !has_required_env_vars() {
         eprintln!("Skipping: no API config");
@@ -411,6 +434,7 @@ async fn test_agent_session_persists_to_disk() {
 /// Two agent instances sharing the same session ID continue each other's conversation.
 /// The second instance should see the first instance's messages as history.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_agent_session_continuation() {
     if !has_required_env_vars() {
         eprintln!("Skipping: no API config");
@@ -685,6 +709,7 @@ fn test_compact_prompt_exists() {
 /// Default session memory config has expected values.
 #[test]
 fn test_session_memory_default_config() {
+        clear_all_test_state();
     let config = ai_agent::session_memory::get_session_memory_config();
     assert_eq!(config.minimum_message_tokens_to_init, 10000);
     assert_eq!(config.minimum_tokens_between_update, 5000);
@@ -694,6 +719,7 @@ fn test_session_memory_default_config() {
 /// Setting custom session memory config works.
 #[test]
 fn test_session_memory_set_config() {
+        clear_all_test_state();
     let state = ai_agent::session_memory::get_session_memory_state();
     let original = state.get_config();
 
@@ -715,6 +741,7 @@ fn test_session_memory_set_config() {
 /// has_met_initialization_threshold checks token count against config.
 #[test]
 fn test_session_memory_init_threshold() {
+        clear_all_test_state();
     let state = ai_agent::session_memory::get_session_memory_state();
     state.set_config(ai_agent::session_memory::SessionMemoryConfig {
         minimum_message_tokens_to_init: 1000,
@@ -738,6 +765,7 @@ fn test_session_memory_init_threshold() {
 /// has_met_update_threshold checks token growth since last extraction.
 #[test]
 fn test_session_memory_update_threshold() {
+        clear_all_test_state();
     let state = ai_agent::session_memory::get_session_memory_state();
     let original = state.get_config();
     state.set_config(ai_agent::session_memory::SessionMemoryConfig {
@@ -757,6 +785,7 @@ fn test_session_memory_update_threshold() {
 /// Session memory state management (initialized flag, extraction flag).
 #[test]
 fn test_session_memory_state_management() {
+        clear_all_test_state();
     let state = ai_agent::session_memory::get_session_memory_state();
 
     // Reset to clean state
@@ -772,6 +801,7 @@ fn test_session_memory_state_management() {
 /// should_extract_memory returns false when token threshold is not met.
 #[test]
 fn test_should_extract_memory_not_ready() {
+        clear_all_test_state();
     let state = ai_agent::session_memory::get_session_memory_state();
     let original = state.get_config();
 
@@ -853,6 +883,7 @@ fn test_tool_definition_with_schema() {
 
 /// A real agent execution should accumulate messages end-to-end.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_agent_message_accumulation() {
     if !has_required_env_vars() {
         eprintln!("Skipping: no API config");
@@ -894,6 +925,7 @@ async fn test_agent_message_accumulation() {
 
 /// Token estimation on agent messages produces reasonable values.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_token_estimation_on_agent_messages() {
     if !has_required_env_vars() {
         eprintln!("Skipping: no API config");
@@ -928,8 +960,10 @@ async fn test_token_estimation_on_agent_messages() {
 
 /// Forking a session with real messages preserves the full conversation history.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_fork_preserves_conversation() {
-    let source = "int-fork-convo-source";
+    let _source = format!("int-fork-convo-{}", Uuid::new_v4());
+    let source = _source.as_str();
     let messages = vec![
         Message {
             role: MessageRole::User,
@@ -1014,6 +1048,7 @@ async fn test_agent_prompt_without_model_fails_gracefully() {
 
 /// Agent with max_turns=0 returns gracefully.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_agent_zero_max_turns() {
     if !has_required_env_vars() {
         eprintln!("Skipping: no API config");
@@ -1050,8 +1085,10 @@ async fn test_agent_zero_max_turns() {
 
 /// Session metadata includes correct message count after saves.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_session_metadata_message_count() {
-    let sid = "int-metadata-count";
+    let _sid = format!("int-metadata-count-{}", Uuid::new_v4());
+    let sid = _sid.as_str();
     ai_agent::session::save_session(sid, vec![], None)
         .await
         .unwrap();
@@ -1104,8 +1141,10 @@ async fn test_session_metadata_message_count() {
 
 /// Session metadata includes created_at and updated_at timestamps.
 #[tokio::test]
+#[serial_test::serial]
 async fn test_session_metadata_timestamps() {
-    let sid = "int-metadata-timestamps";
+    let _sid = format!("int-metadata-ts-{}", Uuid::new_v4());
+    let sid = _sid.as_str();
     ai_agent::session::save_session(sid, vec![], None)
         .await
         .unwrap();

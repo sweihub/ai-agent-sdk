@@ -1,7 +1,12 @@
+//! Test utilities for integration tests.
+//!
+//! This module re-exported as `ai_agent::test_utils` provides
+//! state reset functions for test isolation. It is intentionally
+//! marked `#[doc(hidden)]` and should not be used in production code.
+
 /// Reset all global mutable state to isolated defaults for testing.
 ///
-/// Each test that interacts with production singletons (tool stores, caches, etc.)
-/// should call this at the start to ensure no state leakage between concurrent tests.
+/// Call this at the start of each integration test that modifies global state.
 pub fn clear_all_test_state() {
     // Tool stores
     crate::tools::todo::reset_todos_for_testing();

@@ -16,7 +16,6 @@ use crate::types::Message;
 use crate::utils::env_utils;
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Message shown when tool result content is cleared
 pub const TIME_BASED_MC_CLEARED_MESSAGE: &str = "[Old tool result content cleared]";
@@ -190,7 +189,7 @@ struct PinnedCacheEdit {
 
 static CACHED_MC_STATE: Mutex<Option<CachedMCState>> = Mutex::new(None);
 static PENDING_CACHE_EDITS: Mutex<Option<serde_json::Value>> = Mutex::new(None);
-static MICROCMPACT_STATE_RESET: AtomicBool = AtomicBool::new(false);
+static MICROCMPACT_STATE_RESET: Mutex<bool> = Mutex::new(false);
 
 /// Reset microcompact state - called after compaction
 pub fn reset_microcompact_state() {
@@ -200,7 +199,9 @@ pub fn reset_microcompact_state() {
     if let Ok(mut pending) = PENDING_CACHE_EDITS.lock() {
         *pending = None;
     }
-    MICROCMPACT_STATE_RESET.store(true, Ordering::SeqCst);
+    if let Ok(mut flag) = MICROCMPACT_STATE_RESET.lock() {
+        *flag = true;
+    }
     log::debug!("[microcompact] State reset");
 }
 
@@ -365,7 +366,7 @@ mod tests {
     fn test_reset_microcompact_state() {
         reset_microcompact_state();
         // Should not panic
-        assert!(MICROCMPACT_STATE_RESET.load(Ordering::SeqCst));
+        assert!(*MICROCMPACT_STATE_RESET.lock().unwrap());
     }
 
     #[test]

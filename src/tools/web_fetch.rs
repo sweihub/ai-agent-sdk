@@ -32,9 +32,13 @@ fn preapproved_hosts() -> HashSet<&'static str> {
 }
 
 /// Tool-results directory for binary persistence
-fn tool_results_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join("ai-tool-results");
-    std::fs::create_dir_all(&dir).ok();
+fn tool_results_dir_path() -> PathBuf {
+    std::env::temp_dir().join("ai-tool-results")
+}
+
+async fn tool_results_dir() -> PathBuf {
+    let dir = tool_results_dir_path();
+    tokio::fs::create_dir_all(&dir).await.ok();
     dir
 }
 
@@ -169,8 +173,9 @@ impl WebFetchTool {
         if self.is_binary_content(&content_type, &bytes) {
             // Save binary content to disk (matching TS: binary persistence)
             let filename = format!("webfetch_{}", self.hash_url(url));
-            let path = tool_results_dir().join(&filename);
-            std::fs::write(&path, &bytes)
+            let path = tool_results_dir().await.join(&filename);
+            tokio::fs::write(&path, &bytes)
+                .await
                 .map_err(|e| AgentError::Tool(format!("Failed to save binary content: {}", e)))?;
 
             return Ok(ToolResult {

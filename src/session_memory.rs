@@ -12,7 +12,7 @@ use crate::types::*;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Default configuration for session memory
 pub const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = SessionMemoryConfig {
@@ -41,30 +41,30 @@ impl Default for SessionMemoryConfig {
 /// Session memory state
 pub struct SessionMemoryState {
     config: Mutex<SessionMemoryConfig>,
-    initialized: AtomicBool,
+    initialized: Mutex<bool>,
     tokens_at_last_extraction: AtomicU64,
     /// Last summarized message index (not UUID since Message lacks id field)
     last_summarized_index: Mutex<Option<usize>>,
-    extraction_in_progress: AtomicBool,
+    extraction_in_progress: Mutex<bool>,
 }
 
 impl SessionMemoryState {
     pub fn new() -> Self {
         Self {
             config: Mutex::new(DEFAULT_SESSION_MEMORY_CONFIG),
-            initialized: AtomicBool::new(false),
+            initialized: Mutex::new(false),
             tokens_at_last_extraction: AtomicU64::new(0),
             last_summarized_index: Mutex::new(None),
-            extraction_in_progress: AtomicBool::new(false),
+            extraction_in_progress: Mutex::new(false),
         }
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.initialized.load(Ordering::SeqCst)
+        *self.initialized.lock().unwrap()
     }
 
     pub fn mark_initialized(&self) {
-        self.initialized.store(true, Ordering::SeqCst);
+        *self.initialized.lock().unwrap() = true;
     }
 
     pub fn get_config(&self) -> SessionMemoryConfig {
@@ -93,15 +93,15 @@ impl SessionMemoryState {
     }
 
     pub fn is_extraction_in_progress(&self) -> bool {
-        self.extraction_in_progress.load(Ordering::SeqCst)
+        *self.extraction_in_progress.lock().unwrap()
     }
 
     pub fn start_extraction(&self) {
-        self.extraction_in_progress.store(true, Ordering::SeqCst);
+        *self.extraction_in_progress.lock().unwrap() = true;
     }
 
     pub fn end_extraction(&self) {
-        self.extraction_in_progress.store(false, Ordering::SeqCst);
+        *self.extraction_in_progress.lock().unwrap() = false;
     }
 }
 
@@ -365,7 +365,8 @@ pub fn reset_session_memory_state() {
     SESSION_MEMORY_STATE.set_config(DEFAULT_SESSION_MEMORY_CONFIG);
     SESSION_MEMORY_STATE.set_tokens_at_last_extraction(0);
     SESSION_MEMORY_STATE.set_last_summarized_index(None);
-    // Note: can't reset atomic bool without interior mutability
+    *SESSION_MEMORY_STATE.initialized.lock().unwrap() = false;
+    *SESSION_MEMORY_STATE.extraction_in_progress.lock().unwrap() = false;
 }
 
 #[cfg(test)]

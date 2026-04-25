@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+use tokio::fs;
 
 use super::agent_memory::{AgentMemoryScope, get_agent_memory_dir};
 
@@ -46,19 +47,20 @@ fn get_synced_json_path(agent_type: &str, scope: AgentMemoryScope) -> PathBuf {
     get_agent_memory_dir(agent_type, scope).join(SYNCED_JSON)
 }
 
-fn read_json_file<T>(path: &PathBuf) -> Option<T>
+async fn read_json_file<T>(path: &PathBuf) -> Option<T>
 where
     T: serde::de::DeserializeOwned,
 {
-    std::fs::read_to_string(path)
+    fs::read_to_string(path)
+        .await
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
 }
 
 /// Check if a snapshot exists and whether it's newer than what we last synced.
-pub fn check_agent_memory_snapshot(agent_type: &str, scope: AgentMemoryScope) -> SnapshotAction {
+pub async fn check_agent_memory_snapshot(agent_type: &str, scope: AgentMemoryScope) -> SnapshotAction {
     let snapshot_path = get_snapshot_json_path(agent_type);
-    let snapshot_meta: Option<SnapshotMeta> = read_json_file(&snapshot_path);
+    let snapshot_meta: Option<SnapshotMeta> = read_json_file(&snapshot_path).await;
 
     let Some(snapshot_meta) = snapshot_meta else {
         return SnapshotAction::None;
@@ -67,14 +69,21 @@ pub fn check_agent_memory_snapshot(agent_type: &str, scope: AgentMemoryScope) ->
     let local_mem_dir = get_agent_memory_dir(agent_type, scope);
 
     // Check if local memory exists (has any .md files)
-    let has_local_memory = std::fs::read_dir(&local_mem_dir)
-        .map(|entries| {
-            entries.filter_map(|e| e.ok()).any(|e| {
-                e.file_type().map(|ft| ft.is_file()).unwrap_or(false)
-                    && e.file_name().to_string_lossy().ends_with(".md")
-            })
-        })
-        .unwrap_or(false);
+    let has_local_memory = match fs::read_dir(&local_mem_dir).await {
+        Ok(mut entries) => {
+            let mut has_md = false;
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if entry.file_type().await.map(|ft| ft.is_file()).unwrap_or(false)
+                    && entry.file_name().to_string_lossy().ends_with(".md")
+                {
+                    has_md = true;
+                    break;
+                }
+            }
+            has_md
+        }
+        Err(_) => false,
+    };
 
     if !has_local_memory {
         return SnapshotAction::Initialize {
@@ -83,7 +92,7 @@ pub fn check_agent_memory_snapshot(agent_type: &str, scope: AgentMemoryScope) ->
     }
 
     let synced_path = get_synced_json_path(agent_type, scope);
-    let synced_meta: Option<SyncedMeta> = read_json_file(&synced_path);
+    let synced_meta: Option<SyncedMeta> = read_json_file(&synced_path).await;
 
     let snapshot_newer = synced_meta
         .as_ref()
@@ -100,7 +109,7 @@ pub fn check_agent_memory_snapshot(agent_type: &str, scope: AgentMemoryScope) ->
 }
 
 /// Initialize local agent memory from a snapshot (first-time setup).
-pub fn initialize_from_snapshot(
+pub async fn initialize_from_snapshot(
     agent_type: &str,
     scope: AgentMemoryScope,
     snapshot_timestamp: &str,
@@ -109,13 +118,13 @@ pub fn initialize_from_snapshot(
         "Initializing agent memory for {} from project snapshot",
         agent_type
     );
-    copy_snapshot_to_local(agent_type, scope)?;
-    save_synced_meta(agent_type, scope, snapshot_timestamp)?;
+    copy_snapshot_to_local(agent_type, scope).await?;
+    save_synced_meta(agent_type, scope, snapshot_timestamp).await?;
     Ok(())
 }
 
 /// Replace local agent memory with the snapshot.
-pub fn replace_from_snapshot(
+pub async fn replace_from_snapshot(
     agent_type: &str,
     scope: AgentMemoryScope,
     snapshot_timestamp: &str,
@@ -126,44 +135,44 @@ pub fn replace_from_snapshot(
     );
     // Remove existing .md files before copying to avoid orphans
     let local_mem_dir = get_agent_memory_dir(agent_type, scope);
-    if let Ok(entries) = std::fs::read_dir(&local_mem_dir) {
-        for entry in entries.flatten() {
+    if let Ok(mut entries) = fs::read_dir(&local_mem_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
-            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+            if entry.file_type().await.map(|ft| ft.is_file()).unwrap_or(false)
                 && entry.file_name().to_string_lossy().ends_with(".md")
             {
-                let _ = std::fs::remove_file(&path);
+                let _ = fs::remove_file(&path).await;
             }
         }
     }
-    copy_snapshot_to_local(agent_type, scope)?;
-    save_synced_meta(agent_type, scope, snapshot_timestamp)?;
+    copy_snapshot_to_local(agent_type, scope).await?;
+    save_synced_meta(agent_type, scope, snapshot_timestamp).await?;
     Ok(())
 }
 
 /// Mark the current snapshot as synced without changing local memory.
-pub fn mark_snapshot_synced(
+pub async fn mark_snapshot_synced(
     agent_type: &str,
     scope: AgentMemoryScope,
     snapshot_timestamp: &str,
 ) -> std::io::Result<()> {
-    save_synced_meta(agent_type, scope, snapshot_timestamp)
+    save_synced_meta(agent_type, scope, snapshot_timestamp).await
 }
 
-fn copy_snapshot_to_local(agent_type: &str, scope: AgentMemoryScope) -> std::io::Result<()> {
+async fn copy_snapshot_to_local(agent_type: &str, scope: AgentMemoryScope) -> std::io::Result<()> {
     let snapshot_dir = get_snapshot_dir_for_agent(agent_type);
     let local_dir = get_agent_memory_dir(agent_type, scope);
 
-    std::fs::create_dir_all(&local_dir)?;
+    fs::create_dir_all(&local_dir).await?;
 
     // Copy all files except snapshot.json
-    if let Ok(entries) = std::fs::read_dir(&snapshot_dir) {
-        for entry in entries.flatten() {
+    if let Ok(mut entries) = fs::read_dir(&snapshot_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             let name = entry.file_name();
             if path.is_file() && name != SNAPSHOT_JSON {
                 let dest = local_dir.join(&name);
-                std::fs::copy(&path, &dest)?;
+                fs::copy(&path, &dest).await?;
             }
         }
     }
@@ -171,19 +180,19 @@ fn copy_snapshot_to_local(agent_type: &str, scope: AgentMemoryScope) -> std::io:
     Ok(())
 }
 
-fn save_synced_meta(
+async fn save_synced_meta(
     agent_type: &str,
     scope: AgentMemoryScope,
     snapshot_timestamp: &str,
 ) -> std::io::Result<()> {
     let synced_path = get_synced_json_path(agent_type, scope);
     let local_dir = get_agent_memory_dir(agent_type, scope);
-    std::fs::create_dir_all(&local_dir)?;
+    fs::create_dir_all(&local_dir).await?;
 
     let meta = serde_json::json!({
         "syncedFrom": snapshot_timestamp,
     });
-    std::fs::write(&synced_path, serde_json::to_string_pretty(&meta)?)
+    fs::write(&synced_path, serde_json::to_string_pretty(&meta)?).await
 }
 
 fn is_newer_timestamp(a: &str, b: &str) -> bool {
@@ -209,7 +218,9 @@ mod tests {
 
     #[test]
     fn test_snapshot_action_none_no_snapshot() {
-        let action = check_agent_memory_snapshot("nonexistent", AgentMemoryScope::Local);
+        let action = tokio::runtime::Runtime::new().unwrap().block_on(
+            check_agent_memory_snapshot("nonexistent", AgentMemoryScope::Local),
+        );
         assert_eq!(action, SnapshotAction::None);
     }
 }

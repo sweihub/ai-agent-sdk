@@ -1,8 +1,8 @@
 // Source: ~/claudecode/openclaudecode/src/tools/AgentTool/runAgent.ts
 #![allow(dead_code)]
-use std::sync::Arc;
-
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::fs;
 
 use super::agent_tool_utils::{
     AgentToolResult, extract_partial_result, finalize_agent_tool, resolve_agent_tools,
@@ -183,7 +183,8 @@ pub async fn run_agent(params: RunAgentParams) -> Result<RunAgentResult, String>
         &params.agent_definition,
         &params.worktree_path,
         &params.description,
-    );
+    )
+    .await;
 
     // Build the result
     let result = AgentToolResult {
@@ -203,7 +204,7 @@ pub async fn run_agent(params: RunAgentParams) -> Result<RunAgentResult, String>
 }
 
 /// Write agent metadata for persistence.
-fn write_agent_metadata(
+async fn write_agent_metadata(
     agent_id: &str,
     agent_definition: &AgentDefinition,
     worktree_path: &Option<String>,
@@ -213,7 +214,7 @@ fn write_agent_metadata(
         .join(".claude")
         .join("subagents")
         .join(agent_id);
-    std::fs::create_dir_all(&metadata_dir)?;
+    fs::create_dir_all(&metadata_dir).await?;
 
     let meta = serde_json::json!({
         "agentType": agent_definition.agent_type,
@@ -221,10 +222,11 @@ fn write_agent_metadata(
         "description": description,
     });
 
-    std::fs::write(
+    fs::write(
         metadata_dir.join("metadata.json"),
         serde_json::to_string_pretty(&meta)?,
     )
+    .await
 }
 
 /// Clean up resources after agent completion.

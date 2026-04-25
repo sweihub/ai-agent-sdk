@@ -605,7 +605,9 @@ pub async fn initialize_agent_memory_snapshots(agents: &mut [AgentDefinition]) {
             match super::agent_memory_snapshot::check_agent_memory_snapshot(
                 &agent.agent_type,
                 scope,
-            ) {
+            )
+            .await
+            {
                 super::agent_memory_snapshot::SnapshotAction::Initialize {
                     ref snapshot_timestamp,
                 } => {
@@ -617,7 +619,8 @@ pub async fn initialize_agent_memory_snapshots(agents: &mut [AgentDefinition]) {
                         &agent.agent_type,
                         scope,
                         snapshot_timestamp,
-                    );
+                    )
+                    .await;
                 }
                 super::agent_memory_snapshot::SnapshotAction::PromptUpdate {
                     ref snapshot_timestamp,

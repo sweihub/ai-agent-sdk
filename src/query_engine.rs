@@ -1845,10 +1845,23 @@ impl QueryEngine {
                 let next_turn_count = self.turn_count + 1;
                 if self.config.max_turns > 0 && next_turn_count > self.config.max_turns {
                     // Emit max_turns_reached event (matches TypeScript behavior)
+                    // Emit Done event (matches TypeScript yielding { type: 'result' })
                     if let Some(ref cb) = self.config.on_event {
                         cb(AgentEvent::MaxTurnsReached {
                             max_turns: self.config.max_turns,
                             turn_count: next_turn_count,
+                        });
+                        cb(AgentEvent::Done {
+                            result: crate::types::QueryResult {
+                                text: final_text.clone(),
+                                usage: self.total_usage.clone(),
+                                num_turns: self.turn_count,
+                                duration_ms: 0,
+                                exit_reason: crate::types::ExitReason::MaxTurns {
+                                    max_turns: self.config.max_turns,
+                                    turn_count: next_turn_count,
+                                },
+                            },
                         });
                     }
                     // Return what we have, don't exceed max turns
@@ -1892,6 +1905,17 @@ impl QueryEngine {
                         continue;
                     }
                     if stop_result.prevent_continuation {
+                        if let Some(ref cb) = self.config.on_event {
+                            cb(AgentEvent::Done {
+                                result: crate::types::QueryResult {
+                                    text: final_text.clone(),
+                                    usage: self.total_usage.clone(),
+                                    num_turns: self.turn_count,
+                                    duration_ms: 0,
+                                    exit_reason: crate::types::ExitReason::Completed,
+                                },
+                            });
+                        }
                         return Ok((final_text, crate::types::ExitReason::Completed));
                     }
                 }
@@ -1929,6 +1953,18 @@ impl QueryEngine {
                     }
                 }
 
+                // Emit Done event (matches TypeScript yielding { type: 'result' })
+                if let Some(ref cb) = self.config.on_event {
+                    cb(AgentEvent::Done {
+                        result: crate::types::QueryResult {
+                            text: final_text.clone(),
+                            usage: self.total_usage.clone(),
+                            num_turns: self.turn_count,
+                            duration_ms: 0,
+                            exit_reason: crate::types::ExitReason::Completed,
+                        },
+                    });
+                }
                 // Return the final text (already processed above)
                 return Ok((final_text, crate::types::ExitReason::Completed));
             }

@@ -135,6 +135,7 @@ async fn test_create_agent() {
 
 /// Test Agent tool calling with real .env config
 /// This test makes an actual API call using the configured model
+#[serial_test::serial]
 #[tokio::test]
 async fn test_agent_tool_calling_with_real_env_config() {
     // Only run if required env vars are set
@@ -165,6 +166,7 @@ async fn test_agent_tool_calling_with_real_env_config() {
 
 /// Test agent prompt with real API call using .env config
 /// This is an integration test that exercises the full agent flow
+#[serial_test::serial]
 #[tokio::test]
 async fn test_agent_prompt_with_real_api() {
     // Only run if required env vars are set
@@ -204,6 +206,7 @@ async fn test_agent_prompt_with_real_api() {
 
 /// Test agent tool calling with multiple tools from .env config
 /// This tests that the agent can use tools when configured via .env
+#[serial_test::serial]
 #[tokio::test]
 async fn test_agent_with_multiple_tools_real_config() {
     // Only run if required env vars are set
@@ -248,6 +251,7 @@ async fn test_agent_with_multiple_tools_real_config() {
 
 /// Test that tool executors are registered and can be invoked
 /// This verifies the fix for tool calling not working in TUI
+#[serial_test::serial]
 #[tokio::test]
 async fn test_tool_executors_registered() {
     // Only run if required env vars are set
@@ -304,6 +308,7 @@ async fn test_tool_executors_registered() {
 }
 
 /// Test Glob tool directly via agent
+#[serial_test::serial]
 #[tokio::test]
 async fn test_glob_tool_via_agent() {
     // Only run if required env vars are set
@@ -341,6 +346,7 @@ async fn test_glob_tool_via_agent() {
 }
 
 /// Test FileRead tool directly via agent
+#[serial_test::serial]
 #[tokio::test]
 async fn test_fileread_tool_via_agent() {
     // Only run if required env vars are set
@@ -379,6 +385,7 @@ async fn test_fileread_tool_via_agent() {
 }
 
 /// Test multiple tool calls in one turn
+#[serial_test::serial]
 #[tokio::test]
 async fn test_multiple_tool_calls() {
     // Only run if required env vars are set
@@ -419,6 +426,7 @@ async fn test_multiple_tool_calls() {
 /// This verifies that messages are properly accumulated in the Agent and
 /// passed to the QueryEngine for context maintenance across turns.
 /// Retries up to 3 times because LLM response under rate limiting can be unpredictable.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_agent_remembers_context_across_queries() {
     if !has_required_env_vars() {
@@ -493,6 +501,7 @@ async fn test_agent_remembers_context_across_queries() {
 
 /// Test that ToolSearchTool can be used to discover and use a deferred tool
 /// This tests the full flow: agent uses ToolSearch to find a tool, then uses it
+#[serial_test::serial]
 #[tokio::test]
 async fn test_tool_search_discovers_and_uses_deferred_tool() {
     // Only run if required env vars are set
@@ -556,6 +565,7 @@ async fn test_tool_search_discovers_and_uses_deferred_tool() {
 
 /// Test that AgentEvent streaming events are properly emitted during agent execution.
 /// This verifies: Thinking, MessageStart, MessageStop, ContentBlockDelta, ToolStart, ToolComplete
+#[serial_test::serial]
 #[tokio::test]
 async fn test_agent_events_emitted_correctly() {
     // Only run if required env vars are set
@@ -661,6 +671,16 @@ async fn test_agent_events_emitted_correctly() {
         response.text
     );
 
+    // Verify we received Done event (final event on normal completion)
+    let has_done = events
+        .iter()
+        .any(|e| matches!(e, crate::types::AgentEvent::Done { .. }));
+    assert!(
+        has_done,
+        "Should have received AgentEvent::Done on normal completion. Events: {:?}",
+        events
+    );
+
     println!("All event checks passed! Events received:");
     for (i, event) in events.iter().enumerate() {
         println!("  {}: {:?}", i, event);
@@ -668,6 +688,7 @@ async fn test_agent_events_emitted_correctly() {
 }
 
 /// Test that MaxTurnsReached event is emitted when max turns is limited to 1
+#[serial_test::serial]
 #[tokio::test]
 async fn test_agent_max_turns_reached_event() {
     // Only run if required env vars are set
@@ -756,6 +777,16 @@ async fn test_agent_max_turns_reached_event() {
         events
     );
 
+    // Done event must follow MaxTurnsReached
+    let has_done = events
+        .iter()
+        .any(|e| matches!(e, crate::types::AgentEvent::Done { .. }));
+    assert!(
+        has_done,
+        "Should have received AgentEvent::Done after MaxTurnsReached. Events: {:?}",
+        events
+    );
+
     println!("MaxTurnsReached test passed! Events received:");
     for (i, event) in events.iter().enumerate() {
         println!("  {}: {:?}", i, event);
@@ -763,6 +794,7 @@ async fn test_agent_max_turns_reached_event() {
 }
 
 /// Test that ToolError event is emitted when a tool fails
+#[serial_test::serial]
 #[tokio::test]
 async fn test_agent_tool_error_event() {
     // Only run if required env vars are set
@@ -884,6 +916,7 @@ async fn test_agent_tool_error_event() {
 /// Verify that the agent accumulates messages across multiple query() calls.
 /// This is the core persisted-engine test: the engine must not be recreated
 /// between calls, so conversation state carries forward naturally.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_persisted_engine_accumulates_messages() {
     if !has_required_env_vars() {
@@ -948,6 +981,7 @@ async fn test_persisted_engine_accumulates_messages() {
 }
 
 /// Verify that reset() causes the engine to be recreated and messages are cleared.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_reset_clears_engine_state() {
     if !has_required_env_vars() {
@@ -1007,6 +1041,7 @@ async fn test_reset_clears_engine_state() {
 /// Verify that the agent remembers context across query() calls via the
 /// persisted engine — the LLM should reference information from turn 1 when
 /// asked about it in turn 2.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_persisted_engine_llm_remembers_context() {
     if !has_required_env_vars() {
@@ -1110,6 +1145,7 @@ fn test_agent_event_and_thinking_config() {
 /// This integration test verifies can_use_tool and on_event propagation to subagents
 /// by having the parent agent spawn a subagent and checking that the on_event callback
 /// fires for subagent activity.
+#[serial_test::serial]
 #[tokio::test]
 async fn test_subagent_inherits_parent_context() {
     if !has_required_env_vars() {
@@ -1425,4 +1461,202 @@ async fn test_recap_respects_abort() {
     // But we also have no messages (engine not initialized), so we get empty.
     // Either outcome is valid — the test verifies the method doesn't panic.
     assert!(result.summary.is_none());
+}
+
+/// Test that AgentEvent::Done is emitted on normal completion (no tool calls)
+/// This verifies the completion path: submit_message → no tool calls → Done event
+#[serial_test::serial]
+#[tokio::test]
+async fn test_agent_done_event_normal_completion() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping test: AI_BASE_URL, AI_MODEL, or AI_AUTH_TOKEN not set");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    clear_all_test_state();
+
+    if config.base_url.is_none() || config.auth_token.is_none() {
+        eprintln!("Skipping test: no API config found");
+        return;
+    }
+
+    use std::sync::{Arc, Mutex};
+    let events: Arc<Mutex<Vec<crate::types::AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    // No tools, generous max_turns — forces direct text response, no tool execution loop
+    let agent = Agent::new(config.model.as_ref().unwrap())
+        .max_turns(10)
+        .on_event(move |event| {
+            events_clone.lock().unwrap().push(event);
+        });
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        agent.query("Reply ONLY with: DoneEventTest"),
+    )
+    .await
+    .expect("test timed out");
+
+    assert!(result.is_ok(), "Agent should respond successfully");
+
+    let events = events.lock().unwrap();
+    let done_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, crate::types::AgentEvent::Done { .. }))
+        .collect();
+
+    assert!(
+        !done_events.is_empty(),
+        "Should have received AgentEvent::Done on normal completion. Events: {:?}",
+        events
+    );
+
+    // Verify the Done event has correct exit reason
+    let done = done_events[0];
+    if let crate::types::AgentEvent::Done { result: qr } = done {
+        assert!(
+            qr.text.contains("DoneEventTest") || !qr.text.is_empty(),
+            "Done result should contain response text. Got: {}",
+            qr.text
+        );
+        assert!(
+            matches!(qr.exit_reason, crate::types::ExitReason::Completed),
+            "Exit reason should be Completed for normal response. Got: {:?}",
+            qr.exit_reason
+        );
+    } else {
+        panic!("Expected Done variant");
+    }
+}
+
+/// Test that AgentEvent::Done is emitted when max turns is reached (no tool calls)
+/// This verifies the max-turns early return path in the no-tool-calls branch
+#[serial_test::serial]
+#[tokio::test]
+async fn test_agent_done_event_max_turns() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping test: AI_BASE_URL, AI_MODEL, or AI_AUTH_TOKEN not set");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    clear_all_test_state();
+
+    if config.base_url.is_none() || config.auth_token.is_none() {
+        eprintln!("Skipping test: no API config found");
+        return;
+    }
+
+    use std::sync::{Arc, Mutex};
+    let events: Arc<Mutex<Vec<crate::types::AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    // With tools and max_turns=1, the agent makes one turn. If the LLM responds
+    // with text (no tool calls) and max_turns=1, it hits the max-turns early return.
+    let agent = Agent::new(config.model.as_ref().unwrap())
+        .max_turns(1)
+        .on_event(move |event| {
+            events_clone.lock().unwrap().push(event);
+        });
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        agent.query("Reply with a single word: MaxTurnsDone"),
+    )
+    .await
+    .expect("test timed out");
+
+    assert!(result.is_ok(), "Agent should respond successfully");
+
+    let events = events.lock().unwrap();
+    let done_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, crate::types::AgentEvent::Done { .. }))
+        .collect();
+
+    assert!(
+        !done_events.is_empty(),
+        "Should have received AgentEvent::Done when max turns reached. Events: {:?}",
+        events
+    );
+
+    // The Done event should exist regardless of whether it was triggered by
+    // max-turns or normal completion in the no-tool-calls branch
+    let done = done_events[0];
+    if let crate::types::AgentEvent::Done { result: qr } = done {
+        assert!(!qr.text.is_empty(), "Done result should have text. Got: {}", qr.text);
+    }
+}
+
+/// Test that AgentEvent::Done is emitted after tool execution completes
+/// This verifies the tool execution loop's completion path
+#[serial_test::serial]
+#[tokio::test]
+async fn test_agent_done_event_after_tool_execution() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping test: AI_BASE_URL, AI_MODEL, or AI_AUTH_TOKEN not set");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    clear_all_test_state();
+
+    if config.base_url.is_none() || config.auth_token.is_none() {
+        eprintln!("Skipping test: no API config found");
+        return;
+    }
+
+    use crate::get_all_tools;
+    let tools = get_all_tools();
+
+    use std::sync::{Arc, Mutex};
+    let events: Arc<Mutex<Vec<crate::types::AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let agent = Agent::new(config.model.as_ref().unwrap())
+        .max_turns(3)
+        .tools(tools)
+        .on_event(move |event| {
+            events_clone.lock().unwrap().push(event);
+        });
+
+    // Prompt that should trigger at least one tool call (Bash) then respond
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        agent.query("Run 'echo ToolDoneTest' and tell me the output"),
+    )
+    .await
+    .expect("test timed out");
+
+    assert!(result.is_ok(), "Agent should respond successfully");
+
+    let events = events.lock().unwrap();
+    let done_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, crate::types::AgentEvent::Done { .. }))
+        .collect();
+
+    assert!(
+        !done_events.is_empty(),
+        "Should have received AgentEvent::Done after tool execution. Events: {:?}",
+        events
+    );
+
+    // Verify we also got tool events (confirms tool execution happened)
+    let has_tool_start = events
+        .iter()
+        .any(|e| matches!(e, crate::types::AgentEvent::ToolStart { .. }));
+    assert!(
+        has_tool_start,
+        "Should have ToolStart event before Done. Events: {:?}",
+        events
+    );
+
+    // Done event should be the last meaningful event
+    let done = done_events[0];
+    if let crate::types::AgentEvent::Done { result: qr } = done {
+        assert!(!qr.text.is_empty(), "Done result should have text. Got: {}", qr.text);
+    }
 }

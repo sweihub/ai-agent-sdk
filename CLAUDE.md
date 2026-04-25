@@ -36,6 +36,8 @@ No TODO and stub to Rust code, translate it!
 
 Avoid using of `unsafe` in Rust.
 
+All agent tool calling must be async in Rust.
+
 Fix or suppress any build warnings, allow dead code!
 
 Run affected unit tests and examples with 5 threads when you think you are done!

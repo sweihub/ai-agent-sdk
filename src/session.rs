@@ -2,6 +2,7 @@
 use crate::constants::env::system;
 use crate::types::Message;
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -411,7 +412,6 @@ pub fn create_preserved_segment(
 
 use crate::cli_ndjson_safe_stringify::serialize_to_ndjson;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use tokio::io::AsyncWriteExt;
 use std::sync::LazyLock;
 use tokio::time;
@@ -491,24 +491,30 @@ pub async fn record_sidechain_transcript(
         let entry =
             SessionEntry::sidechain_message(message, agent_id, current_parent_uuid.as_deref());
 
-        // Write to sidechain-specific file
         let path = get_sidechain_jsonl_path(session_id, agent_id);
-        fs::create_dir_all(path.parent().unwrap())
-            .await
-            .map_err(crate::error::AgentError::Io)?;
-
         let line =
             crate::cli_ndjson_safe_stringify::serialize_to_ndjson(&entry)
                 .map_err(crate::error::AgentError::Json)?;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await
-            .map_err(crate::error::AgentError::Io)?;
-        file.write_all(format!("{line}\n").as_bytes())
-            .await
-            .map_err(crate::error::AgentError::Io)?;
+
+        // Hold write lock during file I/O to prevent races with drain().
+        tokio::task::spawn_blocking(move || -> std::result::Result<(), crate::error::AgentError> {
+            std::fs::create_dir_all(path.parent().unwrap())
+                .map_err(crate::error::AgentError::Io)?;
+            let _guard = SESSION_WRITE_LOCK.lock().unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(crate::error::AgentError::Io)?;
+            file.write_all(format!("{line}\n").as_bytes())
+                .map_err(crate::error::AgentError::Io)?;
+            Ok(())
+        })
+        .await
+        .map_err(|_| crate::error::AgentError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "task joined",
+        )))??;
 
         // Chain parent UUID for next message
         current_parent_uuid = Some(uuid::Uuid::new_v4().to_string());
@@ -559,15 +565,26 @@ pub async fn append_session_entry(
         .map_err(crate::error::AgentError::Io)?;
 
     let line = serialize_to_ndjson(entry).map_err(crate::error::AgentError::Json)?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await
-        .map_err(crate::error::AgentError::Io)?;
-    file.write_all(format!("{line}\n").as_bytes())
-        .await
-        .map_err(crate::error::AgentError::Io)?;
+    // Hold write lock during file I/O to prevent races with drain().
+    // Use spawn_blocking so we can hold a std::sync::MutexGuard.
+    tokio::task::spawn_blocking(move || -> std::result::Result<(), crate::error::AgentError> {
+        let _guard = SESSION_WRITE_LOCK.lock().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap())
+            .map_err(crate::error::AgentError::Io)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(crate::error::AgentError::Io)?;
+        file.write_all(format!("{line}\n").as_bytes())
+            .map_err(crate::error::AgentError::Io)?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| crate::error::AgentError::Io(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        "task joined",
+    )))??;
     Ok(())
 }
 
@@ -649,8 +666,26 @@ static SESSION_PENDING: LazyLock<std::sync::Mutex<HashMap<String, Vec<String>>>>
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Whether background drain task is running.
-static SESSION_DRAINING: LazyLock<AtomicBool> =
-    LazyLock::new(|| AtomicBool::new(false));
+static SESSION_DRAINING: LazyLock<std::sync::Mutex<bool>> =
+    LazyLock::new(|| std::sync::Mutex::new(false));
+
+/// Whether a test reset has been requested (for test isolation).
+static SESSION_RESET_REQUESTED: LazyLock<std::sync::Mutex<bool>> =
+    LazyLock::new(|| std::sync::Mutex::new(false));
+
+/// When true, the drain loop should not start. Used to prevent
+/// background disk I/O from racing with test I/O.
+static SESSION_DRAIN_PAUSED: LazyLock<std::sync::Mutex<bool>> =
+    LazyLock::new(|| std::sync::Mutex::new(false));
+
+/// Guard that, when held, prevents any drain() from doing file I/O.
+/// Tests should hold this during their file I/O section.
+/// drain() acquires this before each file write batch.
+/// This is an std::sync::Mutex (parking_lot-style) that blocks the async
+/// drain until the synchronous test code releases it.
+static SESSION_WRITE_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
+
 
 /// Drain interval in milliseconds (matches TS FLUSH_INTERVAL_MS = 100).
 const SESSION_FLUSH_INTERVAL_MS: u64 = 100;
@@ -669,35 +704,59 @@ impl SessionWriter {
                 .push(line);
         }
 
-        // Start background drain if not already running
-        if SESSION_DRAINING
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-            )
-            .is_err()
+        // Start background drain if not already running and not paused
         {
-            return;
+            let paused = *SESSION_DRAIN_PAUSED.lock().unwrap();
+            if paused {
+                return;
+            }
+            let mut draining = SESSION_DRAINING.lock().unwrap();
+            if *draining {
+                return;
+            }
+            *draining = true;
         }
         tokio::spawn(Self::drain_loop());
     }
 
     /// Background drain loop: flushes all pending writes, then sleeps.
     /// Exits when all queues are empty.
+    /// Sleeps in 10ms intervals to respond promptly to reset requests.
     async fn drain_loop() {
+        let mut ticks = 0u32;
         loop {
-            time::sleep(time::Duration::from_millis(SESSION_FLUSH_INTERVAL_MS)).await;
-            if Self::drain().await {
-                SESSION_DRAINING.store(false, std::sync::atomic::Ordering::Relaxed);
-                break;
+            time::sleep(time::Duration::from_millis(10)).await;
+            ticks += 1;
+            // If paused (e.g. during testing), exit immediately without writing.
+            if *SESSION_DRAIN_PAUSED.lock().unwrap() {
+                *SESSION_DRAINING.lock().unwrap() = false;
+                return;
+            }
+            // If a test reset has been requested, flush and exit promptly.
+            if *SESSION_RESET_REQUESTED.lock().unwrap() {
+                Self::drain().await;
+                *SESSION_DRAINING.lock().unwrap() = false;
+                return;
+            }
+            // Flush every SESSION_FLUSH_INTERVAL_MS (100ms = 10 ticks of 10ms)
+            if ticks % ((SESSION_FLUSH_INTERVAL_MS / 10) as u32) == 0 {
+                if Self::drain().await {
+                    *SESSION_DRAINING.lock().unwrap() = false;
+                    break;
+                }
             }
         }
     }
 
     /// Drain all pending writes to disk. Returns true if all queues are now empty.
     pub async fn drain() -> bool {
+        // Fast-path: if a test reset is in progress, skip to avoid
+        // racing with test file I/O. Don't clear pending — another test
+        // may be actively using it.
+        if *SESSION_RESET_REQUESTED.lock().unwrap() {
+            return false;
+        }
+
         let to_drain = {
             let mut pending = SESSION_PENDING.lock().unwrap();
             let mut batch = HashMap::new();
@@ -710,26 +769,36 @@ impl SessionWriter {
             batch
         };
 
-        let mut futures_vec = Vec::new();
-        for (session_id, lines) in to_drain {
-            let path = get_jsonl_path(&session_id);
-            let content: String = lines.join("\n");
-            futures_vec.push(async move {
-                let _ = fs::create_dir_all(path.parent().unwrap()).await;
-                let mut file = match fs::OpenOptions::new()
+        if to_drain.is_empty() {
+            return SESSION_PENDING.lock().unwrap().is_empty();
+        }
+
+        // Re-check reset flag after acquiring data.
+        if *SESSION_RESET_REQUESTED.lock().unwrap() {
+            return false;
+        }
+
+        // Do file I/O in a blocking task while holding the write lock.
+        // This prevents races with synchronous test code that also
+        // holds SESSION_WRITE_LOCK during its file operations.
+        tokio::task::spawn_blocking(move || {
+            let _guard = SESSION_WRITE_LOCK.lock().unwrap();
+            for (session_id, lines) in to_drain {
+                let path = get_jsonl_path(&session_id);
+                let content: String = lines.join("\n");
+                let _ = std::fs::create_dir_all(path.parent().unwrap());
+                if let Ok(mut file) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&path)
-                    .await
                 {
-                    Ok(f) => f,
-                    Err(_) => return,
-                };
-                let _ = file.write_all(format!("{content}\n").as_bytes()).await;
-            });
-        }
+                    let _ = file.write_all(format!("{content}\n").as_bytes());
+                }
+            }
+        })
+        .await
+        .ok();
 
-        futures_util::future::join_all(futures_vec).await;
         SESSION_PENDING.lock().unwrap().is_empty()
     }
 
@@ -737,6 +806,27 @@ impl SessionWriter {
     pub async fn flush(_session_id: &str) {
         Self::drain().await;
     }
+}
+
+/// Reset session globals for test isolation.
+pub fn reset_session_globals_for_testing() {
+    // Pause the drain loop to prevent new drain loops from starting.
+    *SESSION_DRAIN_PAUSED.lock().unwrap() = true;
+    // Signal any existing drain loop to exit.
+    *SESSION_RESET_REQUESTED.lock().unwrap() = true;
+    // Wait for drain loop to notice the flag and exit.
+    // The drain loop sleeps 10ms per iteration, so we poll every 20ms.
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_millis(500) {
+        if !*SESSION_DRAINING.lock().unwrap() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Don't clear SESSION_PENDING — other parallel tests may be using it.
+    // Just stop the drain loop and keep it paused.
+    *SESSION_DRAINING.lock().unwrap() = false;
+    *SESSION_RESET_REQUESTED.lock().unwrap() = false;
 }
 
 /// Enqueue a message for NDJSON streaming write.
@@ -896,7 +986,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_and_load_session() {
-        let session_id = "test-session-1";
+        let _session_id = format!("test-session-{}", uuid::Uuid::new_v4());
+        let session_id = _session_id.as_str();
         let messages = vec![create_test_message("Hello")];
 
         // Save
@@ -921,7 +1012,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fork_session() {
-        let source_id = "fork-source-test";
+        let _source_id = format!("fork-source-{}", uuid::Uuid::new_v4());
+        let source_id = _source_id.as_str();
         let messages = vec![
             create_test_message("First"),
             Message {
@@ -951,7 +1043,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_append_to_session() {
-        let session_id = "append-test-session";
+        let _session_id = format!("append-test-{}", uuid::Uuid::new_v4());
+        let session_id = _session_id.as_str();
 
         // Create with initial message
         save_session(session_id, vec![create_test_message("Initial")], None)
@@ -980,7 +1073,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rename_session() {
-        let session_id = "rename-test-session";
+        let _session_id = format!("rename-test-{}", uuid::Uuid::new_v4());
+        let session_id = _session_id.as_str();
         save_session(session_id, vec![create_test_message("Test")], None)
             .await
             .unwrap();
@@ -996,7 +1090,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tag_session() {
-        let session_id = "tag-test-session";
+        let _session_id = format!("tag-test-{}", uuid::Uuid::new_v4());
+        let session_id = _session_id.as_str();
         save_session(session_id, vec![create_test_message("Test")], None)
             .await
             .unwrap();
@@ -1012,7 +1107,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_session() {
-        let session_id = "delete-test-session";
+        let _session_id = format!("delete-test-{}", uuid::Uuid::new_v4());
+        let session_id = _session_id.as_str();
         save_session(session_id, vec![create_test_message("Test")], None)
             .await
             .unwrap();
@@ -1097,6 +1193,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_append_session_entry() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("ndjson-append-test-{}", uuid::Uuid::new_v4());
         let msg = Message {
             role: crate::types::MessageRole::User,
@@ -1139,6 +1236,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_load_session_jsonl() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("ndjson-load-test-{}", uuid::Uuid::new_v4());
 
         // Create session dir and append entries
@@ -1172,6 +1270,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_append_session_message() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("ndjson-append-msg-{}", uuid::Uuid::new_v4());
 
         let msg = Message {
@@ -1190,6 +1289,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_load_empty_jsonl() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("ndjson-empty-test-{}", uuid::Uuid::new_v4());
         let result = load_session_jsonl(&session_id).await.unwrap();
         assert!(result.is_none());
@@ -1197,6 +1297,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_enqueue_and_drain() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("ndjson-enqueue-test-{}", uuid::Uuid::new_v4());
 
         SessionWriter::enqueue(&session_id, "{\"test\":1}".to_string());
@@ -1222,6 +1323,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_enqueue_session_message() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("ndjson-enqueue-msg-{}", uuid::Uuid::new_v4());
 
         let msg = Message {
@@ -1249,6 +1351,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_multiple_sessions_drain() {
+        crate::tests::common::clear_all_test_state();
         let session_id1 = format!("ndjson-multi-1-{}", uuid::Uuid::new_v4());
         let session_id2 = format!("ndjson-multi-2-{}", uuid::Uuid::new_v4());
 
@@ -1286,6 +1389,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_record_sidechain_transcript() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("sidechain-test-{}", uuid::Uuid::new_v4());
         let agent_id = "test-agent-001";
 
@@ -1333,6 +1437,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_sidechain_parent_uuid_chaining() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("sidechain-uuid-{}", uuid::Uuid::new_v4());
         let agent_id = "uuid-agent";
 
@@ -1384,6 +1489,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_insert_message_chain_sidechain() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("insert-chain-{}", uuid::Uuid::new_v4());
         let msgs = vec![Message {
             role: crate::types::MessageRole::Assistant,
@@ -1410,6 +1516,7 @@ mod ndjson_tests {
 
     #[tokio::test]
     async fn test_insert_message_chain_main() {
+        crate::tests::common::clear_all_test_state();
         let session_id = format!("insert-main-{}", uuid::Uuid::new_v4());
         let msgs = vec![Message {
             role: crate::types::MessageRole::User,

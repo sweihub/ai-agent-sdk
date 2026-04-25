@@ -26,6 +26,11 @@ pub mod task;
 pub mod tasks;
 #[cfg(test)]
 mod tests;
+
+/// Reset all global mutable state for test isolation.
+/// Exported for integration tests. Not part of the stable public API.
+#[doc(hidden)]
+pub mod test_utils;
 pub mod tool;
 pub mod tool_errors;
 pub mod tool_helper;

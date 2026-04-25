@@ -7,6 +7,8 @@
 use crate::error::AgentError;
 use crate::types::*;
 use std::path::Path;
+use tokio::fs;
+use tokio::process::Command;
 
 pub const ENTER_WORKTREE_TOOL_NAME: &str = "EnterWorktree";
 pub const EXIT_WORKTREE_TOOL_NAME: &str = "ExitWorktree";
@@ -27,10 +29,11 @@ fn get_worktree_state() -> &'static std::sync::Mutex<Option<WorktreeInfo>> {
 }
 
 /// Check if a worktree has uncommitted changes (modified files or new commits)
-fn check_uncommitted_changes(worktree_path: &str) -> std::io::Result<bool> {
-    let status_output = std::process::Command::new("git")
+async fn check_uncommitted_changes(worktree_path: &str) -> std::io::Result<bool> {
+    let status_output = Command::new("git")
         .args(["-C", worktree_path, "status", "--porcelain"])
-        .output()?;
+        .output()
+        .await?;
     if status_output.status.success() {
         let output = String::from_utf8_lossy(&status_output.stdout);
         if !output.trim().is_empty() {
@@ -94,9 +97,10 @@ impl EnterWorktreeTool {
         let worktree_path = worktrees_dir.join(&name);
 
         // Validate that we're in a git repo
-        let git_check = std::process::Command::new("git")
+        let git_check = Command::new("git")
             .args(["-C", &context.cwd, "rev-parse", "--git-dir"])
             .output()
+            .await
             .map_err(|e| AgentError::Tool(format!("Failed to run git: {}", e)))?;
         if !git_check.status.success() {
             return Ok(ToolResult {
@@ -112,16 +116,18 @@ impl EnterWorktreeTool {
         let branch_name = format!("wt/{}", name);
 
         // Create worktree directory
-        std::fs::create_dir_all(&worktrees_dir)
+        fs::create_dir_all(&worktrees_dir)
+            .await
             .map_err(|e| AgentError::Tool(format!("Failed to create worktrees directory: {}", e)))?;
 
         // Run `git worktree add <path> <branch>`
-        let add_result = std::process::Command::new("git")
+        let add_result = Command::new("git")
             .args(["worktree", "add", "--detach"])
             .arg(&worktree_path)
             .arg("HEAD")
             .current_dir(&context.cwd)
             .output()
+            .await
             .map_err(|e| AgentError::Tool(format!("Failed to run git worktree add: {}", e)))?;
 
         if !add_result.status.success() {
@@ -136,10 +142,11 @@ impl EnterWorktreeTool {
         }
 
         // Create a named branch in the worktree
-        std::process::Command::new("git")
+        Command::new("git")
             .args(["branch", "-m", &branch_name])
             .current_dir(&worktree_path)
             .output()
+            .await
             .ok(); // Best effort
 
         // Fire WorktreeCreate hook (best effort, logged)
@@ -226,10 +233,10 @@ impl ExitWorktreeTool {
         let action = input["action"].as_str().unwrap_or("keep");
         let discard_changes = input["discardChanges"].as_bool().unwrap_or(false);
 
-        let state = get_worktree_state();
-        let guard = state.lock().unwrap();
-        let worktree_info = guard.clone();
-        drop(guard);
+        let worktree_info = {
+            let guard = get_worktree_state().lock().unwrap();
+            guard.clone()
+        };
 
         if worktree_info.is_none() {
             return Ok(ToolResult {
@@ -244,7 +251,9 @@ impl ExitWorktreeTool {
         let info = worktree_info.unwrap();
 
         // Check for uncommitted changes
-        let has_uncommitted = check_uncommitted_changes(&info.worktree_path).unwrap_or(false);
+        let has_uncommitted = check_uncommitted_changes(&info.worktree_path)
+            .await
+            .unwrap_or(false);
 
         let response = match action {
             "keep" => {
@@ -273,12 +282,13 @@ impl ExitWorktreeTool {
                 }
 
                 // Run `git worktree remove [--force] <path>` from original cwd
-                let remove_result = std::process::Command::new("git")
+                let remove_result = Command::new("git")
                     .args(["worktree", "remove"])
                     .arg(&info.worktree_path)
                     .args(if discard_changes { ["--force"] } else { [""] })
                     .current_dir(&info.original_cwd)
-                    .output();
+                    .output()
+                    .await;
 
                 match remove_result {
                     Ok(output) if output.status.success() => {
@@ -335,7 +345,14 @@ impl Default for ExitWorktreeTool {
 }
 
 /// Reset the global worktree state for test isolation.
-pub fn reset_worktree_for_testing() {
+pub async fn reset_worktree_for_testing() {
+    let state = get_worktree_state();
+    let mut guard = state.lock().unwrap();
+    *guard = None;
+}
+
+/// Sync wrapper for test isolation (called from `clear_all_test_state`)
+pub fn reset_worktree_for_testing_sync() {
     let state = get_worktree_state();
     let mut guard = state.lock().unwrap();
     *guard = None;

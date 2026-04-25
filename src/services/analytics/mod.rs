@@ -86,10 +86,11 @@ fn get_event_queue() -> &'static std::sync::Mutex<Vec<QueuedEvent>> {
 }
 
 /// Sink - initialized during app startup
-static ANALYTICS_SINK: std::sync::OnceLock<Box<dyn AnalyticsSink>> = std::sync::OnceLock::new();
+static ANALYTICS_SINK: std::sync::Mutex<Option<std::sync::Arc<dyn AnalyticsSink>>> =
+    std::sync::Mutex::new(None);
 
-fn get_sink() -> Option<&'static Box<dyn AnalyticsSink>> {
-    ANALYTICS_SINK.get()
+fn get_sink() -> Option<std::sync::Arc<dyn AnalyticsSink>> {
+    ANALYTICS_SINK.lock().unwrap().clone()
 }
 
 /// Attach the analytics sink that will receive all events.
@@ -97,12 +98,13 @@ fn get_sink() -> Option<&'static Box<dyn AnalyticsSink>> {
 /// adding latency to the startup path.
 ///
 /// Idempotent: if a sink is already attached, this is a no-op.
-pub fn attach_analytics_sink(new_sink: Box<dyn AnalyticsSink>) -> bool {
-    if ANALYTICS_SINK.get().is_some() {
+pub fn attach_analytics_sink(new_sink: std::sync::Arc<dyn AnalyticsSink>) -> bool {
+    let mut guard = ANALYTICS_SINK.lock().unwrap();
+    if guard.is_some() {
         return false; // Already attached
     }
 
-    let _ = ANALYTICS_SINK.set(new_sink);
+    *guard = Some(new_sink);
 
     // Drain the queue asynchronously
     let queue = get_event_queue();
@@ -122,7 +124,7 @@ pub fn attach_analytics_sink(new_sink: Box<dyn AnalyticsSink>) -> bool {
         }
 
         // Schedule async drain
-        let sink = ANALYTICS_SINK.get().expect("sink just set");
+        let sink = ANALYTICS_SINK.lock().unwrap().clone().expect("sink just set");
 
         // Use spawn to simulate queueMicrotask behavior
         std::thread::spawn(move || {
@@ -180,12 +182,10 @@ pub async fn log_event_async(event_name: &str, metadata: LogEventMetadata) {
 }
 
 /// Reset analytics state for testing purposes only.
-#[cfg(test)]
 pub fn reset_for_testing() {
-    // Note: Arc::from_raw creates an Arc from a raw pointer - we don't actually need to do anything with the sink
-    // Just clear the queue
     let mut queue = get_event_queue().lock().unwrap();
     queue.clear();
+    *ANALYTICS_SINK.lock().unwrap() = None;
 }
 
 #[cfg(test)]
@@ -234,8 +234,8 @@ mod tests {
             }
         }
 
-        let sink1 = Box::new(TestSink);
-        let sink2 = Box::new(TestSink);
+        let sink1 = std::sync::Arc::new(TestSink);
+        let sink2 = std::sync::Arc::new(TestSink);
 
         let result1 = attach_analytics_sink(sink1);
         let result2 = attach_analytics_sink(sink2);

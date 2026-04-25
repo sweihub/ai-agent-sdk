@@ -43,6 +43,11 @@ pub fn get_cleanup_state() -> CleanupState {
     CLEANUP_STATE.lock().unwrap().clone()
 }
 
+/// Reset cleanup state to default (for testing isolation)
+pub fn reset_cleanup_state_for_testing() {
+    *CLEANUP_STATE.lock().unwrap() = CleanupState::default();
+}
+
 /// Run post-compaction cleanup.
 /// Clears all relevant caches and resets module-level state.
 /// Only resets main-thread module-level state for main thread query sources

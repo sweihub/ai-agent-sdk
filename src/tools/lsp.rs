@@ -3,17 +3,21 @@
 
 use crate::error::AgentError;
 use crate::types::*;
+use std::path::Path;
 use std::path::PathBuf;
+use tokio::fs;
+use tokio::process::Command;
 
 pub const LSP_TOOL_NAME: &str = "LSP";
 pub const DESCRIPTION: &str = "Interact with Language Server Protocol servers for code intelligence (definitions, references, symbols, hover, call hierarchy)";
 
 /// Check if a path is git-ignored using `git check-ignore`
-fn is_git_ignored(path: &PathBuf) -> bool {
-    std::process::Command::new("git")
+async fn is_git_ignored(path: &Path) -> bool {
+    Command::new("git")
         .args(["check-ignore", "-q", "--"])
         .arg(path)
         .status()
+        .await
         .map(|s| s.success())
         .unwrap_or(false)
 }
@@ -105,7 +109,7 @@ impl LSPTool {
         }
 
         // Check file size (10MB limit matching TS)
-        if let Ok(metadata) = std::fs::metadata(&absolute_path) {
+        if let Ok(metadata) = fs::metadata(&absolute_path).await {
             if metadata.len() > 10_000_000 {
                 return Ok(ToolResult {
                     result_type: "text".to_string(),
@@ -121,7 +125,7 @@ impl LSPTool {
         }
 
         // Check if file is git-ignored (matching TS: LSP doesn't analyze ignored files)
-        if is_git_ignored(&absolute_path) {
+        if is_git_ignored(&absolute_path).await {
             return Ok(ToolResult {
                 result_type: "text".to_string(),
                 tool_use_id: "".to_string(),

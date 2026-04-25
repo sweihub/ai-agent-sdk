@@ -27,7 +27,6 @@ fn get_tasks_map() -> &'static Mutex<HashMap<String, Task>> {
     TASKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(test)]
 pub fn reset_task_store() {
     let mut guard = get_tasks_map().lock().unwrap();
     guard.clear();

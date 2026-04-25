@@ -113,7 +113,8 @@ async fn resolve_attachments(
             || path_str.to_lowercase().ends_with(".webp")
             || path_str.to_lowercase().ends_with(".bmp");
 
-        let size = std::fs::metadata(&full_path)
+        let size = tokio::fs::metadata(&full_path)
+            .await
             .ok()
             .map(|m| m.len() as i64)
             .unwrap_or(-1);

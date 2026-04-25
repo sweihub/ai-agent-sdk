@@ -1,8 +1,8 @@
 // Source: ~/claudecode/openclaudecode/src/tools/AgentTool/resumeAgent.ts
 #![allow(dead_code)]
-use std::sync::Arc;
-
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::fs;
 
 use super::agent_tool_utils::{extract_partial_result, finalize_agent_tool};
 use super::load_agents_dir::AgentDefinition;
@@ -42,7 +42,7 @@ pub async fn resume_agent_background(
         .as_millis() as u64;
 
     // Load transcript and metadata
-    let (transcript, meta) = load_transcript_and_metadata(agent_id)?;
+    let (transcript, meta) = load_transcript_and_metadata(agent_id).await?;
 
     // Filter messages for resume
     let resumed_messages = filter_whitespace_only_assistant_messages(
@@ -54,10 +54,8 @@ pub async fn resume_agent_background(
         let path = PathBuf::from(p);
         if path.is_dir() {
             // Bump mtime so stale-worktree cleanup doesn't delete a just-resumed worktree
-            // Using a simple touch-equivalent via std::fs
-            let _ = std::fs::File::options()
-                .write(true)
-                .open(path.join(".claude_resume_marker"));
+            let marker = path.join(".claude_resume_marker");
+            tokio::task::block_in_place(|| std::fs::write(&marker, "").ok());
             Some(p.clone())
         } else {
             log::debug!(
@@ -119,7 +117,7 @@ pub async fn resume_agent_background(
 }
 
 /// Load transcript and metadata for an agent.
-fn load_transcript_and_metadata(
+async fn load_transcript_and_metadata(
     agent_id: &str,
 ) -> Result<(AgentTranscript, AgentMetadata), String> {
     let transcript_path = std::env::current_dir()
@@ -137,7 +135,8 @@ fn load_transcript_and_metadata(
         .join("metadata.json");
 
     // Load transcript
-    let transcript_content = std::fs::read_to_string(&transcript_path)
+    let transcript_content = fs::read_to_string(&transcript_path)
+        .await
         .map_err(|e| format!("Failed to read transcript: {}", e))?;
     let messages: Vec<serde_json::Value> = serde_json::from_str(&transcript_content)
         .map_err(|e| format!("Failed to parse transcript: {}", e))?;
@@ -145,8 +144,9 @@ fn load_transcript_and_metadata(
     let content_replacements = None; // Simplified
 
     // Load metadata
-    let meta = if metadata_path.exists() {
-        let meta_content = std::fs::read_to_string(&metadata_path)
+    let meta = if fs::metadata(&metadata_path).await.is_ok() {
+        let meta_content = fs::read_to_string(&metadata_path)
+            .await
             .map_err(|e| format!("Failed to read metadata: {}", e))?;
         let meta_json: serde_json::Value = serde_json::from_str(&meta_content)
             .map_err(|e| format!("Failed to parse metadata: {}", e))?;
