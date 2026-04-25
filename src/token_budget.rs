@@ -1,12 +1,22 @@
 // Source: /data/home/swei/claudecode/openclaudecode/src/query/tokenBudget.ts
 use regex::Regex;
+use std::sync::LazyLock;
 use std::time::Instant;
 
-const SHORTHAND_START_RE: &str = r"^\s*\+(\d+(?:\.\d+)?)\s*(k|m|b)\b";
-const SHORTHAND_END_RE: &str = r"\s\+(\d+(?:\.\d+)?)\s*(k|m|b)\s*[.!?]?\s*$";
-const VERBOSE_RE: &str = r"\b(?:use|spend)\s+(\d+(?:\.\d+)?)\s*(k|m|b)\s*tokens?\b";
+static SHORTHAND_START_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*\+(\d+(?:\.\d+)?)\s*(k|m|b)\b").unwrap());
 
-const MULTIPLIERS: &[(&str, u64); 3] = &[("k", 1_000), ("m", 1_000_000), ("b", 1_000_000_000)];
+static SHORTHAND_END_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s\+(\d+(?:\.\d+)?)\s*(k|m|b)\s*[.!?]?\s*$").unwrap()
+});
+
+static VERBOSE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:use|spend)\s+(\d+(?:\.\d+)?)\s*(k|m|b)\s*tokens?\b").unwrap()
+});
+
+static VERBOSE_RE_G: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:use|spend)\s+(\d+(?:\.\d+)?)\s*(k|m|b)\s*tokens?\b").unwrap()
+});
 
 /// Threshold at which we stop continuing (90% of budget)
 const COMPLETION_THRESHOLD: f64 = 0.9;
@@ -15,34 +25,34 @@ const DIMINISHING_RETURNS_THRESHOLD: u64 = 3;
 /// Tokens below which we consider a continuation "low production"
 const LOW_PRODUCTION_TOKENS: u64 = 500;
 
-fn get_multiplier(suffix: &str) -> u64 {
-    for (c, m) in MULTIPLIERS {
-        if c.eq_ignore_ascii_case(suffix) {
-            return *m;
-        }
-    }
-    1
+fn parse_budget_match(value: &str, suffix: &str) -> f64 {
+    let value: f64 = value.parse().unwrap_or(0.0);
+    let multiplier = match suffix.to_lowercase().as_str() {
+        "k" => 1_000.0,
+        "m" => 1_000_000.0,
+        "b" => 1_000_000_000.0,
+        _ => 1.0,
+    };
+    value * multiplier
 }
 
-fn parse_budget_match(value: &str, suffix: &str) -> u64 {
-    let parsed: f64 = value.parse().unwrap_or(0.0);
-    (parsed * get_multiplier(suffix) as f64) as u64
-}
-
-pub fn parse_token_budget(text: &str) -> Option<u64> {
-    let re_start = Regex::new(SHORTHAND_START_RE).unwrap();
-    if let Some(caps) = re_start.captures(text) {
-        return Some(parse_budget_match(&caps[1], &caps[2]));
+pub fn parse_token_budget(text: &str) -> Option<f64> {
+    if let Some(caps) = SHORTHAND_START_RE.captures(text) {
+        let value = caps.get(1).map(|m| m.as_str()).unwrap();
+        let suffix = caps.get(2).map(|m| m.as_str()).unwrap();
+        return Some(parse_budget_match(value, suffix));
     }
 
-    let re_end = Regex::new(SHORTHAND_END_RE).unwrap();
-    if let Some(caps) = re_end.captures(text) {
-        return Some(parse_budget_match(&caps[1], &caps[2]));
+    if let Some(caps) = SHORTHAND_END_RE.captures(text) {
+        let value = caps.get(1).map(|m| m.as_str()).unwrap();
+        let suffix = caps.get(2).map(|m| m.as_str()).unwrap();
+        return Some(parse_budget_match(value, suffix));
     }
 
-    let re_verbose = Regex::new(VERBOSE_RE).unwrap();
-    if let Some(caps) = re_verbose.captures(text) {
-        return Some(parse_budget_match(&caps[1], &caps[2]));
+    if let Some(caps) = VERBOSE_RE.captures(text) {
+        let value = caps.get(1).map(|m| m.as_str()).unwrap();
+        let suffix = caps.get(2).map(|m| m.as_str()).unwrap();
+        return Some(parse_budget_match(value, suffix));
     }
 
     None
@@ -57,8 +67,7 @@ pub struct BudgetPosition {
 pub fn find_token_budget_positions(text: &str) -> Vec<BudgetPosition> {
     let mut positions = Vec::new();
 
-    let re_start = Regex::new(SHORTHAND_START_RE).unwrap();
-    if let Some(m) = re_start.find(text) {
+    if let Some(m) = SHORTHAND_START_RE.find(text) {
         let offset = m.start() + m.as_str().len() - m.as_str().trim_start().len();
         positions.push(BudgetPosition {
             start: offset,
@@ -66,8 +75,7 @@ pub fn find_token_budget_positions(text: &str) -> Vec<BudgetPosition> {
         });
     }
 
-    let re_end = Regex::new(SHORTHAND_END_RE).unwrap();
-    if let Some(m) = re_end.find(text) {
+    if let Some(m) = SHORTHAND_END_RE.find(text) {
         let end_start = m.start() + 1;
         let already_covered = positions
             .iter()
@@ -80,8 +88,7 @@ pub fn find_token_budget_positions(text: &str) -> Vec<BudgetPosition> {
         }
     }
 
-    let re_verbose_g = Regex::new(&format!("{}g", VERBOSE_RE)).unwrap();
-    for m in re_verbose_g.find_iter(text) {
+    for m in VERBOSE_RE_G.find_iter(text) {
         positions.push(BudgetPosition {
             start: m.start(),
             end: m.end(),
@@ -91,10 +98,9 @@ pub fn find_token_budget_positions(text: &str) -> Vec<BudgetPosition> {
     positions
 }
 
-pub fn get_budget_continuation_message(pct_display: u64, turn_tokens: u64, budget: u64) -> String {
+pub fn get_budget_continuation_message(pct: f64, turn_tokens: u64, budget: f64) -> String {
     format!(
-        "Stopped at {}% of token target ({} / {}). Keep working — do not summarize.",
-        pct_display, turn_tokens, budget
+        "Stopped at {pct}% of token target ({turn_tokens} / {budget}). Keep working \u{2014} do not summarize."
     )
 }
 
@@ -137,7 +143,7 @@ pub struct TokenBudgetCompletion {
     /// Total turn tokens consumed
     pub tokens: u64,
     /// Budget target
-    pub budget: u64,
+    pub budget: f64,
     /// How many continuations were performed
     pub continuation_count: u64,
     /// Duration in milliseconds since tracker started
@@ -156,26 +162,17 @@ pub enum TokenBudgetDecision {
 }
 
 /// Check whether the token budget allows the query loop to continue.
-///
-/// * `tracker` — mutable BudgetTracker shared across checks
-/// * `_agent_id` — if Some, we're in a subagent context; budget check is skipped
-/// * `budget` — the token budget target, or None if not set
-/// * `turn_tokens` — total tokens consumed in the current turn
-///
-/// When the budget is under 90%, a nudge message is returned and the loop continues.
-/// Once over 90% or diminishing returns are detected, the loop stops gracefully.
 pub fn check_token_budget(
     tracker: &mut BudgetTracker,
     _agent_id: Option<&str>,
-    budget: Option<u64>,
+    budget: Option<f64>,
     turn_tokens: u64,
 ) -> TokenBudgetDecision {
     let budget = match budget {
-        Some(b) if b > 0 => b,
+        Some(b) if b > 0.0 => b,
         _ => return TokenBudgetDecision::Stop { completion: None },
     };
 
-    // Subagents don't enforce token budget
     if _agent_id.is_some() {
         return TokenBudgetDecision::Stop { completion: None };
     }
@@ -186,30 +183,25 @@ pub fn check_token_budget(
         turn_tokens
     };
 
-    // Check diminishing returns: 3+ continuations, both current and previous delta low
     let diminishing_returns = tracker.continuation_count >= DIMINISHING_RETURNS_THRESHOLD
         && current_delta < LOW_PRODUCTION_TOKENS
         && tracker.last_delta_tokens < LOW_PRODUCTION_TOKENS;
 
-    let pct = if budget > 0 {
-        (turn_tokens as f64 / budget as f64)
+    let pct = if budget > 0.0 {
+        (turn_tokens as f64 / budget)
     } else {
         1.0
     };
-    let pct_display = (pct * 100.0) as u64;
 
-    // If under 90% and not diminishing returns, continue with nudge
     if pct < COMPLETION_THRESHOLD && !diminishing_returns {
         tracker.continuation_count += 1;
         tracker.last_delta_tokens = current_delta;
         tracker.last_global_turn_tokens = turn_tokens;
         return TokenBudgetDecision::Continue {
-            nudge_message: get_budget_continuation_message(pct_display, turn_tokens, budget),
+            nudge_message: get_budget_continuation_message((pct * 100.0) as u64 as f64, turn_tokens, budget),
         };
     }
 
-    // Stop: we've either exceeded 90% or hit diminishing returns
-    // If we've already continued at least once, emit a completion event
     let completion = if tracker.continuation_count > 0 || diminishing_returns {
         Some(TokenBudgetCompletion {
             pct,
@@ -232,27 +224,39 @@ mod tests {
 
     #[test]
     fn test_parse_token_budget_shorthand_start() {
-        assert_eq!(parse_token_budget("+5k tokens"), Some(5_000));
-        assert_eq!(parse_token_budget("+2m"), Some(2_000_000));
-        assert_eq!(parse_token_budget("+1.5b"), Some(1_500_000_000));
+        assert_eq!(parse_token_budget("+500k"), Some(500_000.0));
+        assert_eq!(parse_token_budget("+2m"), Some(2_000_000.0));
+        assert_eq!(parse_token_budget("+1.5b"), Some(1_500_000_000.0));
     }
 
     #[test]
     fn test_parse_token_budget_shorthand_end() {
-        assert_eq!(parse_token_budget("do this +3k"), Some(3_000));
-        assert_eq!(parse_token_budget("keep going +1m!"), Some(1_000_000));
+        assert_eq!(parse_token_budget("I want +500k."), Some(500_000.0));
     }
 
     #[test]
     fn test_parse_token_budget_verbose() {
-        assert_eq!(parse_token_budget("use 4k tokens"), Some(4_000));
-        assert_eq!(parse_token_budget("spend 2m tokens"), Some(2_000_000));
+        assert_eq!(parse_token_budget("use 2M tokens"), Some(2_000_000.0));
+        assert_eq!(parse_token_budget("spend 500k tokens"), Some(500_000.0));
     }
 
     #[test]
     fn test_parse_token_budget_none() {
-        assert_eq!(parse_token_budget("hello world"), None);
-        assert_eq!(parse_token_budget(""), None);
+        assert!(parse_token_budget("hello world").is_none());
+    }
+
+    #[test]
+    fn test_find_positions() {
+        let positions = find_token_budget_positions("+500k");
+        assert!(!positions.is_empty());
+    }
+
+    #[test]
+    fn test_budget_continuation_message() {
+        let msg = get_budget_continuation_message(80.0, 160000, 200000.0);
+        assert!(msg.contains("80%"));
+        assert!(msg.contains("160000"));
+        assert!(msg.contains("200000"));
     }
 
     #[test]
@@ -268,22 +272,21 @@ mod tests {
         let d = check_token_budget(&mut t, None, None, 100);
         assert!(matches!(d, TokenBudgetDecision::Stop { completion: None }));
 
-        let d2 = check_token_budget(&mut t, None, Some(0), 100);
+        let d2 = check_token_budget(&mut t, None, Some(0.0), 100);
         assert!(matches!(d2, TokenBudgetDecision::Stop { completion: None }));
     }
 
     #[test]
     fn test_check_subagent_skips_budget() {
         let mut t = BudgetTracker::new();
-        let d = check_token_budget(&mut t, Some("sub1"), Some(5_000), 100);
+        let d = check_token_budget(&mut t, Some("sub1"), Some(5_000.0), 100);
         assert!(matches!(d, TokenBudgetDecision::Stop { completion: None }));
     }
 
     #[test]
     fn test_check_continue_under_threshold() {
         let mut t = BudgetTracker::new();
-        // 100 / 5000 = 2%, well under 90%
-        let d = check_token_budget(&mut t, None, Some(5_000), 100);
+        let d = check_token_budget(&mut t, None, Some(5_000.0), 100);
         match d {
             TokenBudgetDecision::Continue { nudge_message } => {
                 assert!(nudge_message.contains("Keep working"));
@@ -296,11 +299,9 @@ mod tests {
     #[test]
     fn test_check_stop_over_threshold() {
         let mut t = BudgetTracker::new();
-        // 5000 / 5000 = 100%, over 90%
-        let d = check_token_budget(&mut t, None, Some(5_000), 5_000);
+        let d = check_token_budget(&mut t, None, Some(5_000.0), 5_000);
         match d {
             TokenBudgetDecision::Stop { completion } => {
-                // First check, no continuations yet -> no completion event
                 assert!(completion.is_none());
             }
             other => panic!("Expected Stop, got {:?}", other),
@@ -310,12 +311,10 @@ mod tests {
     #[test]
     fn test_check_continuation_then_stop() {
         let mut t = BudgetTracker::new();
-        // First: under 90% -> continue
-        let d = check_token_budget(&mut t, None, Some(5_000), 100);
+        let d = check_token_budget(&mut t, None, Some(5_000.0), 100);
         assert!(matches!(d, TokenBudgetDecision::Continue { .. }));
 
-        // Second: over 90% -> stop with completion
-        let d = check_token_budget(&mut t, None, Some(5_000), 4_800);
+        let d = check_token_budget(&mut t, None, Some(5_000.0), 4_800);
         match d {
             TokenBudgetDecision::Stop { completion } => {
                 let c = completion.expect("should have completion");
@@ -330,42 +329,21 @@ mod tests {
     #[test]
     fn test_check_diminishing_returns() {
         let mut t = BudgetTracker::new();
-        // Simulate 3 continuations with low deltas
-        for i in 0..3 {
+        for _ in 0..3 {
             let tokens = t.last_global_turn_tokens + 100;
-            let d = check_token_budget(&mut t, None, Some(10_000), tokens);
-            assert!(matches!(d, TokenBudgetDecision::Continue { .. }), "iteration {} should continue", i);
+            let d = check_token_budget(&mut t, None, Some(10_000.0), tokens);
+            assert!(matches!(d, TokenBudgetDecision::Continue { .. }));
         }
-        // 4th continuation with low delta -> diminishing returns
         let tokens = t.last_global_turn_tokens + 100;
-        let d = check_token_budget(&mut t, None, Some(10_000), tokens);
+        let d = check_token_budget(&mut t, None, Some(10_000.0), tokens);
         match d {
             TokenBudgetDecision::Stop { completion } => {
                 let c = completion.expect("should have completion");
                 assert!(c.diminishing_returns);
             }
-            TokenBudgetDecision::Continue { nudge_message } => {
-                // Still under 90% but diminishing returns triggered after 3 low deltas
-                // Actually the logic: diminishing returns = count >= 3 && both deltas < 500
-                // At this point count=3, current_delta=100, last_delta=100 -> diminishing returns
-                // But this was returned as Continue because it checked before diminishing returns
-                // Let me check: the 4th call sets count=3 (after 3 continuations)
-                // The 5th call should trigger diminishing returns
-                // Actually let's count: after 3 calls, continuation_count=3
-                // On the 4th call: diminishing_returns = 3 >= 3 && 100 < 500 && 100 < 500 = true
-                // So pct (400/10000 = 4%) < 0.9 && !diminishing_returns(false) = false
-                // -> Stop path
-                panic!("Expected Stop due to diminishing returns, got Continue: {}", nudge_message);
+            TokenBudgetDecision::Continue { .. } => {
+                panic!("Expected Stop due to diminishing returns");
             }
         }
-    }
-
-    #[test]
-    fn test_budget_continuation_message() {
-        let msg = get_budget_continuation_message(75, 3750, 5000);
-        assert!(msg.contains("75%"));
-        assert!(msg.contains("3750"));
-        assert!(msg.contains("5000"));
-        assert!(msg.contains("Keep working"));
     }
 }

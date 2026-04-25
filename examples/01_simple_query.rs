@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if is_rate_limited { "hit" } else { "cleared" }
                 );
             }
-            AgentEvent::CompactProgress { event } => match event {
+            AgentEvent::Compact { event } => match event {
                 CompactProgressEvent::HooksStart { hook_type } => {
                     let msg = match hook_type {
                         CompactHookType::PreCompact => "Running PreCompact hooks…",
@@ -133,8 +133,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 CompactProgressEvent::CompactStart => {
                     println!("\n[Compact] starting compaction");
                 }
-                CompactProgressEvent::CompactEnd => {
-                    println!("\n[Compact] compaction complete");
+                CompactProgressEvent::CompactEnd { message } => {
+                    if let Some(msg) = message {
+                        println!("\n[Compact] {}", msg);
+                    } else {
+                        println!("\n[Compact] compaction complete");
+                    }
                 }
             },
         }

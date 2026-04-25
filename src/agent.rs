@@ -1053,6 +1053,7 @@ impl Agent {
                 token_budget: None,
                 agent_id: None,
                 loaded_nested_memory_paths: std::collections::HashSet::new(),
+                task_budget: None,
             };
             let mut engine = QueryEngine::new(config);
             register_all_tool_executors(&mut engine);
@@ -1183,6 +1184,7 @@ impl Agent {
             token_budget: None,
             agent_id: None,
             loaded_nested_memory_paths: std::collections::HashSet::new(),
+            task_budget: None,
         });
 
         // Snapshot parent context fields to thread into subagent closures
@@ -1422,6 +1424,7 @@ impl Agent {
                 output_tokens: usage.output_tokens,
                 cache_creation_input_tokens: usage.cache_creation_input_tokens,
                 cache_read_input_tokens: usage.cache_read_input_tokens,
+                iterations: usage.iterations,
             },
             num_turns: turns,
             duration_ms: start.elapsed().as_millis() as u64,

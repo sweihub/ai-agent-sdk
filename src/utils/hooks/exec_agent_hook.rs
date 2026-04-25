@@ -361,6 +361,7 @@ When done, return your result using the {tool} tool with:
         token_budget: None,
         agent_id: Some("hook-agent".to_string()),
         loaded_nested_memory_paths: HashSet::new(),
+        task_budget: None,
     });
 
     // Spawn the query task so events flow asynchronously through the channel.
@@ -434,7 +435,7 @@ When done, return your result using the {tool} tool with:
             | AgentEvent::RateLimitStatus { .. }
             | AgentEvent::MaxTurnsReached { .. }
             | AgentEvent::Tombstone { .. }
-            | AgentEvent::CompactProgress { .. } => {
+            | AgentEvent::Compact { .. } => {
                 // Streaming and internal events — mapped to generic stream_event.
                 serde_json::json!({ "type": "stream_event" })
             }

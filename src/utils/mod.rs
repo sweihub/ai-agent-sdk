@@ -360,3 +360,8 @@ pub use exec_file_no_throw::{
 pub use platform::{SUPPORTED_PLATFORMS, detect_platform, get_platform};
 pub use set::{difference, every, intersects, union};
 pub use subprocess_env::{GHA_SUBPROCESS_SCRUB, register_upstream_proxy_env_fn, subprocess_env};
+
+// Token budget / token counting utilities
+pub mod token_budget;
+pub mod tokens;
+pub mod analyze_context;

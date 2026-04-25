@@ -1738,23 +1738,23 @@ fn test_compact_progress_event_variants() {
 
     // Simulate what query_engine emits via on_event callback
     let events: Vec<AgentEvent> = vec![
-        AgentEvent::CompactProgress {
+        AgentEvent::Compact {
             event: CompactProgressEvent::HooksStart {
                 hook_type: CompactHookType::PreCompact,
             },
         },
-        AgentEvent::CompactProgress {
+        AgentEvent::Compact {
             event: CompactProgressEvent::CompactStart,
         },
-        AgentEvent::CompactProgress {
-            event: CompactProgressEvent::CompactEnd,
+        AgentEvent::Compact {
+            event: CompactProgressEvent::CompactEnd { message: None },
         },
     ];
 
     let compact_events: Vec<_> = events
         .iter()
         .filter_map(|e| {
-            if let AgentEvent::CompactProgress { event } = e {
+            if let AgentEvent::Compact { event } = e {
                 Some(event)
             } else {
                 None
@@ -1780,7 +1780,7 @@ fn test_compact_progress_event_variants() {
         "Second event should be CompactStart"
     );
     assert!(
-        matches!(compact_events[2], CompactProgressEvent::CompactEnd),
+        matches!(compact_events[2], CompactProgressEvent::CompactEnd { .. }),
         "Third event should be CompactEnd"
     );
 }
@@ -1793,17 +1793,17 @@ fn test_compact_hook_type_variants() {
     use crate::types::AgentEvent;
 
     // Verify all hook types can be constructed
-    let pre = AgentEvent::CompactProgress {
+    let pre = AgentEvent::Compact {
         event: CompactProgressEvent::HooksStart {
             hook_type: CompactHookType::PreCompact,
         },
     };
-    let post = AgentEvent::CompactProgress {
+    let post = AgentEvent::Compact {
         event: CompactProgressEvent::HooksStart {
             hook_type: CompactHookType::PostCompact,
         },
     };
-    let session = AgentEvent::CompactProgress {
+    let session = AgentEvent::Compact {
         event: CompactProgressEvent::HooksStart {
             hook_type: CompactHookType::SessionStart,
         },
@@ -1812,41 +1812,43 @@ fn test_compact_hook_type_variants() {
     // Verify pattern matching works for all variants
     assert!(matches!(
         pre,
-        AgentEvent::CompactProgress {
+        AgentEvent::Compact {
             event: CompactProgressEvent::HooksStart { hook_type: CompactHookType::PreCompact }
         }
     ));
     assert!(matches!(
         post,
-        AgentEvent::CompactProgress {
+        AgentEvent::Compact {
             event: CompactProgressEvent::HooksStart { hook_type: CompactHookType::PostCompact }
         }
     ));
     assert!(matches!(
         session,
-        AgentEvent::CompactProgress {
+        AgentEvent::Compact {
             event: CompactProgressEvent::HooksStart { hook_type: CompactHookType::SessionStart }
         }
     ));
 
     // Verify CompactStart and CompactEnd
-    let start = AgentEvent::CompactProgress {
+    let start = AgentEvent::Compact {
         event: CompactProgressEvent::CompactStart,
     };
-    let end = AgentEvent::CompactProgress {
-        event: CompactProgressEvent::CompactEnd,
+    let end = AgentEvent::Compact {
+        event: CompactProgressEvent::CompactEnd {
+            message: Some("Conversation compacted".to_string()),
+        },
     };
 
     assert!(matches!(
         start,
-        AgentEvent::CompactProgress {
+        AgentEvent::Compact {
             event: CompactProgressEvent::CompactStart
         }
     ));
     assert!(matches!(
         end,
-        AgentEvent::CompactProgress {
-            event: CompactProgressEvent::CompactEnd
+        AgentEvent::Compact {
+            event: CompactProgressEvent::CompactEnd { .. }
         }
     ));
 }

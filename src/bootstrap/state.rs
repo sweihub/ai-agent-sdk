@@ -347,7 +347,29 @@ pub fn get_total_web_search_requests() -> u64 {
 
 pub fn get_turn_output_tokens() -> u64 {
     let state = STATE.lock().unwrap();
-    state.model_usage.values().map(|u| u.output_tokens).sum()
+    let total = state.model_usage.values().map(|u| u.output_tokens).sum::<u64>();
+    total.saturating_sub(state.output_tokens_at_turn_start)
+}
+
+/// Per-turn output token snapshotting (matches TypeScript bootstrap/state.ts)
+pub fn snapshot_output_tokens_for_turn(budget: Option<f64>) {
+    let mut state = STATE.lock().unwrap();
+    state.output_tokens_at_turn_start = state.model_usage.values().map(|u| u.output_tokens).sum();
+    state.current_turn_token_budget = budget;
+    state.budget_continuation_count = 0;
+}
+
+pub fn get_current_turn_token_budget() -> Option<f64> {
+    STATE.lock().unwrap().current_turn_token_budget
+}
+
+pub fn get_budget_continuation_count() -> u64 {
+    STATE.lock().unwrap().budget_continuation_count
+}
+
+pub fn increment_budget_continuation_count() {
+    let mut state = STATE.lock().unwrap();
+    state.budget_continuation_count += 1;
 }
 
 pub fn set_has_unknown_model_cost() {
@@ -1111,6 +1133,10 @@ struct State {
     pub last_main_request_id: Option<String>,
     pub last_api_completion_timestamp: Option<u64>,
     pub pending_post_compaction: bool,
+    /// Per-turn token snapshotting state
+    pub output_tokens_at_turn_start: u64,
+    pub current_turn_token_budget: Option<f64>,
+    pub budget_continuation_count: u64,
 }
 
 fn get_initial_state() -> State {
@@ -1212,6 +1238,9 @@ fn get_initial_state() -> State {
         last_main_request_id: None,
         last_api_completion_timestamp: None,
         pending_post_compaction: false,
+        output_tokens_at_turn_start: 0,
+        current_turn_token_budget: None,
+        budget_continuation_count: 0,
     }
 }
 

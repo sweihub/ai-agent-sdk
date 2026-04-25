@@ -272,6 +272,10 @@ pub struct CompactionResult {
     pub pre_compact_token_count: u32,
     /// Post-compaction token count
     pub post_compact_token_count: u32,
+    /// True post-compact token count (estimated from final compacted messages)
+    pub true_post_compact_token_count: Option<u64>,
+    /// Token usage from the compaction API call itself
+    pub compaction_usage: Option<TokenUsage>,
 }
 
 /// Strip images from messages before sending for compaction

@@ -189,6 +189,7 @@ impl Tool for AgentTool {
             token_budget: None,
             agent_id: agent_name.clone().or_else(|| Some(description.to_string())),
             loaded_nested_memory_paths: std::collections::HashSet::new(),
+            task_budget: None,
         });
 
         // Register all tool executors on the sub-engine

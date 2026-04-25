@@ -26,6 +26,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::time::sleep as sleep_tokio;
 
+/// Format token count for human-readable display (e.g., "120.3k", "1.2m")
+fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}m", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        format!("{}", tokens)
+    }
+}
+
 /// Return an empty JSON object value to use as default for tool call arguments
 pub(crate) fn empty_json_value() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
@@ -73,6 +84,14 @@ pub(crate) fn strip_thinking(content: &str) -> String {
 
 /// Parse Anthropic API usage info
 fn parse_anthropic_usage(usage: &serde_json::Value) -> TokenUsage {
+    let iterations = usage.get("iterations").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter().filter_map(|it| {
+            Some(IterationUsage {
+                input_tokens: it.get("input_tokens").and_then(|v| v.as_u64())?,
+                output_tokens: it.get("output_tokens").and_then(|v| v.as_u64())?,
+            })
+        }).collect()
+    });
     TokenUsage {
         input_tokens: usage
             .get("input_tokens")
@@ -88,6 +107,7 @@ fn parse_anthropic_usage(usage: &serde_json::Value) -> TokenUsage {
         cache_read_input_tokens: usage
             .get("cache_read_input_tokens")
             .and_then(|v| v.as_u64()),
+        iterations,
     }
 }
 
@@ -199,6 +219,9 @@ pub struct QueryEngine {
     content_replacement_state: Option<crate::services::compact::ContentReplacementState>,
     /// When the current query started (for duration_ms in AgentEvent::Done)
     start_time: Option<std::time::Instant>,
+    /// task_budget.remaining tracking across compaction boundaries.
+    /// Decremented by pre-compact final context after each compaction.
+    task_budget_remaining: Option<u64>,
 }
 
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
@@ -246,11 +269,19 @@ pub struct QueryEngineConfig {
     /// Token budget target in tokens (TOKEN_BUDGET feature).
     /// When set, the query loop continues until 90% of this budget is consumed,
     /// or diminishing returns are detected.
-    pub token_budget: Option<u64>,
+    pub token_budget: Option<f64>,
     /// Optional agent ID for subagent identification. Token budget is skipped for subagents.
     pub agent_id: Option<String>,
     /// Memory paths already loaded by parent agents
     pub loaded_nested_memory_paths: std::collections::HashSet<String>,
+    /// API task_budget (distinct from tokenBudget +500k auto-continue feature).
+    /// `total` is the budget for the whole agentic turn.
+    pub task_budget: Option<TaskBudget>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskBudget {
+    pub total: u64,
 }
 
 impl Default for QueryEngineConfig {
@@ -275,6 +306,7 @@ impl Default for QueryEngineConfig {
             token_budget: None,
             agent_id: None,
             loaded_nested_memory_paths: std::collections::HashSet::new(),
+            task_budget: None,
         }
     }
 }
@@ -290,12 +322,7 @@ impl QueryEngine {
             config,
             messages: vec![],
             turn_count: 0,
-            total_usage: TokenUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-            },
+            total_usage: TokenUsage::default(),
             total_cost: 0.0,
             http_client: reqwest::Client::new(),
             tool_executors: Mutex::new(HashMap::new()),
@@ -320,6 +347,7 @@ impl QueryEngine {
                 crate::services::compact::create_content_replacement_state(),
             ),
             start_time: None,
+            task_budget_remaining: None,
         }
     }
 
@@ -875,7 +903,10 @@ impl QueryEngine {
     /// Attempt to auto-compact the conversation when token count exceeds threshold
     /// Translated from: compactConversation in compact.ts
     /// Returns Ok(true) if compaction happened, Ok(false) if not needed, Err on failure
-    async fn do_auto_compact(&mut self) -> Result<bool, AgentError> {
+    /// Execute auto-compact.
+    /// `snip_tokens_freed` is subtracted from the token count for the threshold
+    /// check, matching TypeScript's autocompact threshold adjustment.
+    async fn do_auto_compact(&mut self, snip_tokens_freed: u32) -> Result<bool, AgentError> {
         use crate::compact::{
             estimate_token_count, get_auto_compact_threshold, get_compact_prompt,
             strip_images_from_messages, strip_reinjected_attachments,
@@ -891,14 +922,19 @@ impl QueryEngine {
         let token_count = estimate_token_count(&self.messages, self.config.max_tokens);
         let threshold = get_auto_compact_threshold(&self.config.model);
 
+        // Adjust for snip: subtract tokens snip already freed (matches TypeScript)
+        let effective_tokens = (token_count as i64).saturating_sub(snip_tokens_freed as i64) as u32;
+
         // Check if we need to compact
-        if token_count <= threshold {
+        if effective_tokens <= threshold {
             return Ok(false);
         }
 
         log::info!(
-            "[compact] Starting auto-compact: {} tokens, threshold: {}",
+            "[compact] Starting auto-compact: {} effective tokens ({} raw - {} snip freed), threshold: {}",
+            effective_tokens,
             token_count,
+            snip_tokens_freed,
             threshold
         );
 
@@ -932,16 +968,21 @@ impl QueryEngine {
         let compact_prompt = get_compact_prompt();
 
         // Phase 5: Generate summary using LLM with PTL retry logic
-        let summary = match self
+        let (summary, compaction_usage) = match self
             .generate_summary_with_ptl_retry(&stripped_messages, &compact_prompt)
             .await
         {
-            Ok(s) => s,
+            Ok(result) => result,
             Err(e) => {
                 log::warn!("[compact] Summary generation failed: {}", e);
                 return Err(e);
             }
         };
+        log::debug!(
+            "[compact] compaction_usage: input={} output={}",
+            compaction_usage.input_tokens,
+            compaction_usage.output_tokens
+        );
 
         // Parse and format the summary
         let formatted_summary = format_compact_summary(&summary);
@@ -978,6 +1019,17 @@ impl QueryEngine {
 
         let new_token_count = estimate_token_count(&new_messages, self.config.max_tokens);
 
+        // true_post_compact_token_count: rough estimation from compacted messages
+        let true_post_compact_tokens = crate::compact::rough_token_count_estimation_for_content(
+            &new_messages.iter().map(|m| m.content.clone()).collect::<String>(),
+        ) as u64;
+        log::debug!(
+            "[compact] true_post_compact_token_count={} compaction_usage.input={} compaction_usage.output={}",
+            true_post_compact_tokens,
+            compaction_usage.input_tokens,
+            compaction_usage.output_tokens,
+        );
+
         // Phase 7: Post-compact phase
         // Clear file read state and loaded memory paths
         // Re-add plan attachment, plan mode attachment, skill attachment if applicable
@@ -1007,7 +1059,7 @@ impl QueryEngine {
         &self,
         messages: &[Message],
         compact_prompt: &str,
-    ) -> Result<String, AgentError> {
+    ) -> Result<(String, TokenUsage), AgentError> {
         const MAX_PTL_RETRIES: usize = 3;
 
         // Build messages for summary request
@@ -1047,7 +1099,7 @@ impl QueryEngine {
                 .generate_summary_from_messages(&truncated_messages)
                 .await
             {
-                Ok(summary) => return Ok(summary),
+                Ok((summary, _usage)) => return Ok((summary, _usage)),
                 Err(e) => {
                     if attempt < MAX_PTL_RETRIES - 1 {
                         log::warn!(
@@ -1126,7 +1178,7 @@ impl QueryEngine {
     async fn generate_summary_from_messages(
         &self,
         summary_messages: &[Message],
-    ) -> Result<String, AgentError> {
+    ) -> Result<(String, TokenUsage), AgentError> {
         // Get API configuration
         let api_key = self
             .config
@@ -1200,6 +1252,22 @@ impl QueryEngine {
             return Err(AgentError::Api(format!("Summary API error: {}", error)));
         }
 
+        // Extract usage from the compaction API call
+        let usage = response_json.get("usage").map(|u| TokenUsage {
+            input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            cache_creation_input_tokens: u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()),
+            cache_read_input_tokens: u.get("cache_read_input_tokens").and_then(|v| v.as_u64()),
+            iterations: u.get("iterations").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter().filter_map(|it| {
+                    Some(IterationUsage {
+                        input_tokens: it.get("input_tokens").and_then(|v| v.as_u64())?,
+                        output_tokens: it.get("output_tokens").and_then(|v| v.as_u64())?,
+                    })
+                }).collect()
+            }),
+        }).unwrap_or_default();
+
         let summary = extract_text_from_response(&response_json);
 
         if summary.is_empty() {
@@ -1209,7 +1277,7 @@ impl QueryEngine {
         // Parse the summary to extract just the <summary> content
         let parsed_summary = parse_compact_summary(&summary);
 
-        Ok(parsed_summary)
+        Ok((parsed_summary, usage))
     }
 
     /// Execute pre-compact hooks
@@ -1228,7 +1296,7 @@ impl QueryEngine {
 
         // Emit hooks_start event
         if let Some(ref cb) = self.config.on_event {
-            cb(AgentEvent::CompactProgress {
+            cb(AgentEvent::Compact {
                 event: CompactProgressEvent::HooksStart {
                     hook_type: CompactHookType::PreCompact,
                 },
@@ -1288,7 +1356,7 @@ impl QueryEngine {
 
         // Emit hooks_start event
         if let Some(ref cb) = self.config.on_event {
-            cb(AgentEvent::CompactProgress {
+            cb(AgentEvent::Compact {
                 event: CompactProgressEvent::HooksStart {
                     hook_type: CompactHookType::PostCompact,
                 },
@@ -1360,50 +1428,6 @@ impl QueryEngine {
         // Note: max_turns check is done AFTER turn completes (matching TypeScript)
         // See below after tool execution loop for the check
 
-        // Apply snip compact and microcompact with PreCompact/PostCompact hooks
-        let _pre_compact_instructions = self.execute_pre_compact_hooks().await;
-        // Apply snip compact before microcompact (establishes compaction order)
-        crate::services::compact::snip_compact_if_known(&self.messages);
-        // Apply microcompact before auto-compact: evict old tool result content
-        crate::services::compact::microcompact::microcompact_messages(&mut self.messages);
-        self.execute_post_compact_hooks("Snip + microcompact applied").await;
-
-        // Check auto-compact BEFORE entering tool loop - don't wait until after API call
-        // This ensures we compact before hitting the token limit
-        let threshold = get_auto_compact_threshold(&self.config.model);
-        let token_count = compact::estimate_token_count(&self.messages, self.config.max_tokens);
-
-        if self.auto_compact_tracking.consecutive_failures < 3 && token_count > threshold {
-            if let Some(ref cb) = self.config.on_event {
-                cb(AgentEvent::CompactProgress {
-                    event: CompactProgressEvent::CompactStart,
-                });
-            }
-            // Try to compact before making any API call
-            match self.do_auto_compact().await {
-                Ok(true) => {
-                    // Compaction succeeded, reset tracking state (matching TypeScript)
-                    self.auto_compact_tracking.compacted = true;
-                    self.auto_compact_tracking.turn_id = uuid::Uuid::new_v4().to_string();
-                    self.auto_compact_tracking.turn_counter = 0;
-                    self.auto_compact_tracking.consecutive_failures = 0;
-                }
-                Ok(false) => {
-                    // No compaction needed or possible
-                }
-                Err(e) => {
-                    // Compaction failed, continue anyway
-                    self.auto_compact_tracking.consecutive_failures += 1;
-                    eprintln!("Auto-compact failed: {}", e);
-                }
-            }
-            if let Some(ref cb) = self.config.on_event {
-                cb(AgentEvent::CompactProgress {
-                    event: CompactProgressEvent::CompactEnd,
-                });
-            }
-        }
-
         // Emit Thinking event for the first turn before the first API call
         if let Some(ref cb) = self.config.on_event {
             cb(AgentEvent::Thinking { turn: 1 });
@@ -1412,62 +1436,124 @@ impl QueryEngine {
 
         // Tool call loop - continue until no more tool calls
         // Use config.max_turns as the limit (0xffffffff = effectively unlimited)
+        //
+        // Matching TypeScript query.ts flow:
+        // Each iteration runs: snip → microcompact → context collapse → auto-compact → API call
         let mut max_tool_turns = self.config.max_turns;
         while max_tool_turns > 0 {
             max_tool_turns -= 1;
 
-            // Apply snip compact and microcompact with PreCompact/PostCompact hooks
-            let _pre_compact_instructions = self.execute_pre_compact_hooks().await;
-            // Apply snip compact before microcompact (establishes compaction order)
-            crate::services::compact::snip_compact_if_known(&self.messages);
-            // Apply microcompact before auto-compact in the tool loop
+            // Reset compacted flag for this iteration (TypeScript: tracking.compacted = false
+            // is implicit via state update at top of loop)
+            self.auto_compact_tracking.compacted = false;
+
+            // --- Compaction pipeline (matches TypeScript query.ts order) ---
+
+            // 1. Snip compact (TypeScript: snipModule!.snipCompactIfNeeded)
+            let snip_result = crate::services::compact::snip_compact_if_known(&self.messages);
+            // Update messages reference if snip returned modified messages
+            // (snip_compact_if_known currently returns &self.messages unchanged,
+            // but we capture tokens_freed for the threshold adjustment)
+            let snip_tokens_freed = snip_result.tokens_freed;
+
+            // 2. Microcompact (TypeScript: deps.microcompact)
             crate::services::compact::microcompact::microcompact_messages(&mut self.messages);
-            self.execute_post_compact_hooks("Snip + microcompact applied").await;
 
-            // Check if we should auto-compact based on token count (after tool execution)
-            let token_count = compact::estimate_token_count(&self.messages, self.config.max_tokens);
-            let threshold = get_auto_compact_threshold(&self.config.model);
-            let _effective_window = get_effective_context_window_size(&self.config.model);
-
-            // Only attempt auto-compact if:
-            // 1. Not disabled by circuit breaker (max 3 consecutive failures)
-            // 2. Token count exceeds auto-compact threshold
-            if self.auto_compact_tracking.consecutive_failures < 3 && token_count > threshold {
-                if let Some(ref cb) = self.config.on_event {
-                    cb(AgentEvent::CompactProgress {
-                        event: CompactProgressEvent::CompactStart,
-                    });
-                }
-                // Attempt auto-compact
-                match self.do_auto_compact().await {
-                    Ok(true) => {
-                        // Compaction succeeded, reset tracking state (matching TypeScript)
-                        // Reset turnCounter/turnId to reflect the MOST RECENT compact
-                        self.auto_compact_tracking.compacted = true;
-                        self.auto_compact_tracking.turn_id = uuid::Uuid::new_v4().to_string();
-                        self.auto_compact_tracking.turn_counter = 0;
-                        self.auto_compact_tracking.consecutive_failures = 0;
-                        // Rebuild api_messages after compaction
-                        continue;
-                    }
-                    Ok(false) => {
-                        // No compaction needed or possible
-                    }
-                    Err(e) => {
-                        // Compaction failed, increment failure counter
-                        self.auto_compact_tracking.consecutive_failures += 1;
-                        eprintln!("Auto-compact failed: {}", e);
-                    }
-                }
-                if let Some(ref cb) = self.config.on_event {
-                    cb(AgentEvent::CompactProgress {
-                        event: CompactProgressEvent::CompactEnd,
-                    });
+            // 3. Context collapse (TypeScript: contextCollapse.applyCollapsesIfNeeded)
+            // Runs BEFORE auto-compact so that if collapse gets us under the
+            // auto-compact threshold, auto-compact is a no-op and we keep
+            // granular context instead of a single summary.
+            if crate::services::context_collapse::is_context_collapse_enabled() {
+                let collapse_result = crate::services::context_collapse::apply_collapses_if_needed(
+                    self.messages.clone(),
+                );
+                if collapse_result.changed {
+                    self.messages = collapse_result.messages;
                 }
             }
 
-            // Reset compacted flag for next iteration
-            self.auto_compact_tracking.compacted = false;
+            // 4. Auto-compact check (TypeScript: deps.autocompact)
+            // Only attempt if:
+            // 1. Not disabled by circuit breaker (max 3 consecutive failures)
+            // 2. Token count exceeds auto-compact threshold
+            //
+            // do_auto_compact internally checks token count vs threshold
+            // (adjusted by snip_tokens_freed), so it returns Ok(false) when
+            // compaction is not needed.
+            if self.auto_compact_tracking.consecutive_failures < 3 {
+                let token_estimate = compact::estimate_token_count(&self.messages, self.config.max_tokens);
+                let threshold = get_auto_compact_threshold(&self.config.model);
+
+                if token_estimate > threshold {
+                    if let Some(ref cb) = self.config.on_event {
+                        cb(AgentEvent::Compact {
+                            event: CompactProgressEvent::CompactStart,
+                        });
+                    }
+                    // Capture pre-compact token count for the summary message
+                    let pre_compact_tokens = token_estimate;
+                    match self.do_auto_compact(snip_tokens_freed).await {
+                        Ok(true) => {
+                            // Compaction succeeded — reset tracking state (matching TypeScript)
+                            self.auto_compact_tracking.compacted = true;
+                            self.auto_compact_tracking.turn_id = uuid::Uuid::new_v4().to_string();
+                            self.auto_compact_tracking.turn_counter = 0;
+                            self.auto_compact_tracking.consecutive_failures = 0;
+
+                            // task_budget: decrement remaining by pre-compact final context
+                            if self.config.task_budget.is_some() {
+                                let pre_ctx = pre_compact_tokens as u64;
+                                let current = self.task_budget_remaining
+                                    .or(self.config.task_budget.as_ref().map(|tb| tb.total));
+                                self.task_budget_remaining = Some(current.unwrap_or(0).saturating_sub(pre_ctx));
+                            }
+
+                            // Fall through to API call with compacted messages
+                            // (TypeScript: messagesForQuery = postCompactMessages, then continues)
+
+                            // Emit "Conversation compacted" summary to TUI/CLI (matching TypeScript)
+                            let post_compact_tokens = compact::estimate_token_count(
+                                &self.messages,
+                                self.config.max_tokens,
+                            );
+                            let pct_reduced = if pre_compact_tokens > 0 {
+                                ((pre_compact_tokens as i64 - post_compact_tokens as i64) as f64
+                                    / pre_compact_tokens as f64)
+                                    * 100.0
+                            } else {
+                                0.0
+                            };
+                            let compact_summary = format!(
+                                "Conversation compacted: {} → {} tokens ({:.0}% reduced)",
+                                format_tokens(pre_compact_tokens as u64),
+                                format_tokens(post_compact_tokens as u64),
+                                pct_reduced
+                            );
+                            if let Some(ref cb) = self.config.on_event {
+                                cb(AgentEvent::Compact {
+                                    event: CompactProgressEvent::CompactEnd {
+                                        message: Some(compact_summary),
+                                    },
+                                });
+                            }
+                        }
+                        Ok(false) => {
+                            // No compaction needed or possible
+                        }
+                        Err(e) => {
+                            // Compaction failed — propagate failure count so the circuit breaker
+                            // can stop retrying on the next iteration (matching TypeScript)
+                            self.auto_compact_tracking.consecutive_failures += 1;
+                            eprintln!("Auto-compact failed: {}", e);
+                        }
+                    }
+                    if let Some(ref cb) = self.config.on_event {
+                        cb(AgentEvent::Compact {
+                            event: CompactProgressEvent::CompactEnd { message: None },
+                        });
+                    }
+                }
+            }
 
             // Build messages for API
             let api_messages = self.build_api_messages()?;
@@ -1504,6 +1590,21 @@ impl QueryEngine {
                 "messages": api_messages,
                 "stream": true
             });
+
+            // Add task_budget to output_config when configured (API beta: task-budgets-2026-03-13)
+            if self.config.task_budget.is_some() {
+                let tb = self.config.task_budget.as_ref().unwrap();
+                let mut task_budget_obj = serde_json::json!({
+                    "type": "tokens",
+                    "total": tb.total,
+                });
+                if let Some(remaining) = self.task_budget_remaining {
+                    task_budget_obj["remaining"] = serde_json::json!(remaining);
+                }
+                request_body["output_config"] = serde_json::json!({
+                    "task_budget": task_budget_obj,
+                });
+            }
 
             // Add system prompt to request body (Anthropic uses separate field)
             // Include system_context if configured (matching TypeScript appendSystemContext)
@@ -1700,6 +1801,13 @@ impl QueryEngine {
                                         "[reactive-compact] reduced {} messages after 413 error",
                                         reactive_result.messages.len()
                                     );
+                                    // task_budget: decrement remaining by pre-compact final context
+                                    if self.config.task_budget.is_some() {
+                                        let pre_ctx = crate::compact::estimate_token_count(&self.messages, 0) as u64;
+                                        let current = self.task_budget_remaining
+                                            .or(self.config.task_budget.as_ref().map(|tb| tb.total));
+                                        self.task_budget_remaining = Some(current.unwrap_or(0).saturating_sub(pre_ctx));
+                                    }
                                     self.messages = reactive_result.messages;
                                     self.execute_post_compact_hooks("Reactive compact applied after 413 error").await;
                                     use_fallback_model = true;
@@ -1972,6 +2080,8 @@ impl QueryEngine {
                 // Check token budget (TOKEN_BUDGET feature)
                 // When a token budget is set, we continue the loop with a nudge message
                 // until we reach 90% of the budget or hit diminishing returns.
+                // Snapshot output tokens at turn start for per-turn budget tracking
+                crate::bootstrap::state::snapshot_output_tokens_for_turn(self.config.token_budget);
                 let token_budget = self.config.token_budget;
                 let agent_id = self.config.agent_id.clone();
                 match crate::token_budget::check_token_budget(
@@ -2734,6 +2844,7 @@ fn extract_usage(response: &serde_json::Value) -> TokenUsage {
                 .unwrap_or(0),
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            iterations: None,
         };
     }
 
@@ -2754,6 +2865,7 @@ fn extract_usage(response: &serde_json::Value) -> TokenUsage {
         cache_read_input_tokens: usage
             .and_then(|u| u.get("cache_read_input_tokens"))
             .and_then(|v| v.as_u64()),
+        iterations: None,
     }
 }
 
@@ -3047,6 +3159,7 @@ async fn make_nonstreaming_request(
                     .unwrap_or(0),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                iterations: None,
             };
         }
         // Calculate cost (matching TypeScript cost tracking)
@@ -3529,6 +3642,7 @@ async fn make_anthropic_streaming_request(
                                     .unwrap_or(0),
                                 cache_creation_input_tokens: None,
                                 cache_read_input_tokens: None,
+                                iterations: None,
                             };
                         }
                         result.message_started = true;

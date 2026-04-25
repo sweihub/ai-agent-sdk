@@ -150,6 +150,15 @@ pub struct TokenUsage {
     pub cache_creation_input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iterations: Option<Vec<IterationUsage>>,
+}
+
+/// Per-iteration usage from the Anthropic API (server-side tool loops)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IterationUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -583,7 +592,12 @@ pub enum CompactProgressEvent {
     #[serde(rename = "compact_start")]
     CompactStart,
     #[serde(rename = "compact_end")]
-    CompactEnd,
+    CompactEnd {
+        /// Human-readable summary emitted to TUI/CLI after successful compaction,
+        /// e.g. "Conversation compacted: 120.3k → 8.2k tokens (93%)"
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
 }
 
 /// Compact hook types
@@ -670,7 +684,7 @@ pub enum AgentEvent {
     Tombstone { message: String },
     /// Compact progress event (hooks_start, compact_start, compact_end)
     /// Matches TypeScript ToolUseContext.onCompactProgress
-    CompactProgress { event: CompactProgressEvent },
+    Compact { event: CompactProgressEvent },
 }
 
 /// Content delta types for streaming
