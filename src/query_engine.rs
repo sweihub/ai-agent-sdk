@@ -197,6 +197,8 @@ pub struct QueryEngine {
     loaded_nested_memory_paths: std::collections::HashSet<String>,
     /// Content replacement state for aggregate tool result budget enforcement
     content_replacement_state: Option<crate::services::compact::ContentReplacementState>,
+    /// When the current query started (for duration_ms in AgentEvent::Done)
+    start_time: Option<std::time::Instant>,
 }
 
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
@@ -317,6 +319,7 @@ impl QueryEngine {
             content_replacement_state: Some(
                 crate::services::compact::create_content_replacement_state(),
             ),
+            start_time: None,
         }
     }
 
@@ -843,6 +846,14 @@ impl QueryEngine {
         self.messages.clone()
     }
 
+    /// Milliseconds elapsed since the start of the current query.
+    /// Returns 0 if no query is active (start_time is None).
+    pub fn query_duration_ms(&self) -> u64 {
+        self.start_time
+            .map(|t| std::time::Instant::now().duration_since(t).as_millis() as u64)
+            .unwrap_or(0)
+    }
+
     /// Reset conversation state — clear messages, usage, and turn count.
     /// Preserves config, tool executors, and abort controller.
     pub fn reset(&mut self) {
@@ -1311,6 +1322,7 @@ impl QueryEngine {
         &mut self,
         prompt: &str,
     ) -> Result<(String, crate::types::ExitReason), AgentError> {
+        self.start_time = Some(std::time::Instant::now());
         // Add user message to history
         self.messages.push(crate::types::Message {
             role: crate::types::MessageRole::User,
@@ -1344,6 +1356,9 @@ impl QueryEngine {
         let token_count = compact::estimate_token_count(&self.messages, self.config.max_tokens);
 
         if self.auto_compact_tracking.consecutive_failures < 3 && token_count > threshold {
+            if let Some(ref cb) = self.config.on_event {
+                cb(AgentEvent::CompactStart);
+            }
             // Try to compact before making any API call
             match self.do_auto_compact().await {
                 Ok(true) => {
@@ -1361,6 +1376,9 @@ impl QueryEngine {
                     self.auto_compact_tracking.consecutive_failures += 1;
                     eprintln!("Auto-compact failed: {}", e);
                 }
+            }
+            if let Some(ref cb) = self.config.on_event {
+                cb(AgentEvent::CompactEnd);
             }
         }
 
@@ -1393,6 +1411,9 @@ impl QueryEngine {
             // 1. Not disabled by circuit breaker (max 3 consecutive failures)
             // 2. Token count exceeds auto-compact threshold
             if self.auto_compact_tracking.consecutive_failures < 3 && token_count > threshold {
+                if let Some(ref cb) = self.config.on_event {
+                    cb(AgentEvent::CompactStart);
+                }
                 // Attempt auto-compact
                 match self.do_auto_compact().await {
                     Ok(true) => {
@@ -1413,6 +1434,9 @@ impl QueryEngine {
                         self.auto_compact_tracking.consecutive_failures += 1;
                         eprintln!("Auto-compact failed: {}", e);
                     }
+                }
+                if let Some(ref cb) = self.config.on_event {
+                    cb(AgentEvent::CompactEnd);
                 }
             }
 
@@ -1733,7 +1757,7 @@ impl QueryEngine {
                                     .to_string(),
                                 usage: self.total_usage.clone(),
                                 num_turns: self.turn_count,
-                                duration_ms: 0,
+                                duration_ms: self.query_duration_ms(),
                                 exit_reason: crate::types::ExitReason::MaxTokens,
                             },
                         });
@@ -1848,7 +1872,7 @@ impl QueryEngine {
                                 text: final_text.clone(),
                                 usage: self.total_usage.clone(),
                                 num_turns: self.turn_count,
-                                duration_ms: 0,
+                                duration_ms: self.query_duration_ms(),
                                 exit_reason: crate::types::ExitReason::MaxTurns {
                                     max_turns: self.config.max_turns,
                                     turn_count: next_turn_count,
@@ -1903,7 +1927,7 @@ impl QueryEngine {
                                     text: final_text.clone(),
                                     usage: self.total_usage.clone(),
                                     num_turns: self.turn_count,
-                                    duration_ms: 0,
+                                    duration_ms: self.query_duration_ms(),
                                     exit_reason: crate::types::ExitReason::Completed,
                                 },
                             });
@@ -1952,7 +1976,7 @@ impl QueryEngine {
                             text: final_text.clone(),
                             usage: self.total_usage.clone(),
                             num_turns: self.turn_count,
-                            duration_ms: 0,
+                            duration_ms: self.query_duration_ms(),
                             exit_reason: crate::types::ExitReason::Completed,
                         },
                     });
@@ -2273,7 +2297,7 @@ impl QueryEngine {
                             text: final_text.clone(),
                             usage: self.total_usage.clone(),
                             num_turns: self.turn_count,
-                            duration_ms: 0,
+                            duration_ms: self.query_duration_ms(),
                             exit_reason: crate::types::ExitReason::default(),
                         },
                     });
@@ -2321,7 +2345,7 @@ impl QueryEngine {
                     text: final_text.clone(),
                     usage: self.total_usage.clone(),
                     num_turns: self.turn_count,
-                    duration_ms: 0, // Could track start time for accurate duration
+                    duration_ms: self.query_duration_ms(),
                     exit_reason: crate::types::ExitReason::Completed,
                 },
             });

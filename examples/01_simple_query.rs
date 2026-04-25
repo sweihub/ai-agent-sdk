@@ -121,6 +121,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if is_rate_limited { "hit" } else { "cleared" }
                 );
             }
+            AgentEvent::CompactStart => println!("\n[Compact] starting compaction"),
+            AgentEvent::CompactEnd => println!("\n[Compact] compaction complete"),
         }
     };
 

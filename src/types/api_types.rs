@@ -644,6 +644,10 @@ pub enum AgentEvent {
     /// Tombstone event for orphaned messages on streaming fallback
     /// (matches TypeScript 'tombstone' event)
     Tombstone { message: String },
+    /// Compaction started (messages are being summarized)
+    CompactStart,
+    /// Compaction finished (messages have been summarized)
+    CompactEnd,
 }
 
 /// Content delta types for streaming
