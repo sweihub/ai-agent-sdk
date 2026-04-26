@@ -63,6 +63,21 @@ impl EnterPlanModeTool {
         "Enter structured planning mode. Switches from implementation to planning workflow where you can explore the codebase and design an implementation approach."
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "EnterPlanMode".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, _input: Option<&serde_json::Value>) -> Option<String> {
+        None
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),
@@ -135,6 +150,21 @@ impl ExitPlanModeTool {
 
     pub fn description(&self) -> &str {
         "Exit plan mode and present the plan for user approval. Call this when you have finished designing the implementation approach."
+    }
+
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "ExitPlanMode".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, _input: Option<&serde_json::Value>) -> Option<String> {
+        None
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
     }
 
     pub fn input_schema(&self) -> ToolInputSchema {

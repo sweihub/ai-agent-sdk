@@ -16,6 +16,28 @@ impl BashTool {
         "Execute a shell command and return its output"
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "Bash".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["command"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        let content_str = content["content"].as_str()?;
+        if content_str.is_empty() {
+            Some("No output".to_string())
+        } else {
+            // Count lines in output
+            let line_count = content_str.lines().count();
+            Some(format!("{} {}", line_count, if line_count == 1 { "line" } else { "lines" }))
+        }
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),

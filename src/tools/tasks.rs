@@ -112,6 +112,21 @@ impl TaskCreateTool {
         "Create a new task in the task list. Tasks can be tracked with status and can block other tasks."
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "TaskCreate".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["subject"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),
@@ -197,6 +212,23 @@ impl TaskListTool {
 
     pub fn description(&self) -> &str {
         "List all tasks in the task list. Shows task ID, subject, status, and blocking information."
+    }
+
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "TaskList".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, _input: Option<&serde_json::Value>) -> Option<String> {
+        None
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        let text = content["content"].as_str()?;
+        let lines = text.lines().count();
+        Some(format!("{} lines", lines))
     }
 
     pub fn input_schema(&self) -> ToolInputSchema {
@@ -285,6 +317,21 @@ impl TaskUpdateTool {
 
     pub fn description(&self) -> &str {
         "Update an existing task's status, subject, description, or other fields."
+    }
+
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "TaskUpdate".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["taskId"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
     }
 
     pub fn input_schema(&self) -> ToolInputSchema {
@@ -422,6 +469,23 @@ impl TaskGetTool {
 
     pub fn description(&self) -> &str {
         "Get details of a specific task by ID."
+    }
+
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "TaskGet".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["taskId"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        let text = content["content"].as_str()?;
+        let lines = text.lines().count();
+        Some(format!("{} lines", lines))
     }
 
     pub fn input_schema(&self) -> ToolInputSchema {

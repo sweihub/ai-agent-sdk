@@ -61,6 +61,21 @@ impl EnterWorktreeTool {
         work on a branch independently without affecting the main working directory."
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "EnterWorktree".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["name"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),
@@ -205,6 +220,21 @@ impl ExitWorktreeTool {
         "Exit the current worktree and return to the original working directory. \
         Choose to 'keep' the worktree on disk or 'remove' it. \
         Uncommitted changes will be checked unless discardChanges is true."
+    }
+
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "ExitWorktree".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["action"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
     }
 
     pub fn input_schema(&self) -> ToolInputSchema {

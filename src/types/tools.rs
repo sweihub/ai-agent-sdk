@@ -1,6 +1,15 @@
-// Source: ~/claudecode/openclaudecode/src/types/tools.ts
+// Source: ~/claudecode/openclaudecode/src/types/tools.rs
 
 use serde::{Deserialize, Serialize};
+
+/// Trait for tool structs that provide render/display metadata.
+/// All built-in tool structs implement this trait, enabling agent.rs
+/// to construct `ToolRenderFns` without hardcoded display logic.
+pub trait ToolRender: Send + Sync {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String;
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String>;
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String>;
+}
 
 /// Base tool progress data with flexible extra fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]

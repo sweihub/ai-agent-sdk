@@ -37,6 +37,21 @@ impl SyntheticOutputTool {
         DESCRIPTION
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "StructuredOutput".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, _input: Option<&serde_json::Value>) -> Option<String> {
+        None
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         match &self.schema {
             Some(s) => ToolInputSchema {

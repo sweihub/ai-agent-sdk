@@ -16,6 +16,23 @@ impl FileReadTool {
         "Read files from filesystem"
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "Read".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["path"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        let text = content["content"].as_str()?;
+        let line_count = text.lines().count();
+        Some(format!("{} {} {}", line_count, if line_count == 1 { "line" } else { "lines" }, "read"))
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),

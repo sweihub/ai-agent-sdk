@@ -16,6 +16,22 @@ impl FileWriteTool {
         "Write content to files"
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "Write".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["path"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        let text = content["content"].as_str()?;
+        Some(text.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),

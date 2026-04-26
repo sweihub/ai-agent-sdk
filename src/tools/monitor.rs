@@ -23,6 +23,21 @@ impl MonitorTool {
         "Monitor system resources and performance (not implemented)"
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "Monitor".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, _input: Option<&serde_json::Value>) -> Option<String> {
+        None
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),

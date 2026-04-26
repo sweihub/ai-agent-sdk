@@ -25,6 +25,23 @@ impl TaskOutputTool {
         "Retrieve output from a running or completed background task (bash command, agent, etc.). Supports blocking wait for completion with configurable timeout."
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "TaskOutput".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["task_id"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        let text = content["content"].as_str()?;
+        let lines = text.lines().count();
+        Some(format!("{} lines", lines))
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),

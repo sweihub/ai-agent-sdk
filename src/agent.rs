@@ -39,8 +39,456 @@ use crate::tools::write::FileWriteTool as WriteTool;
 use crate::permission::{PermissionResult, PermissionAllowDecision, PermissionDenyDecision, PermissionDecisionReason};
 use crate::types::AgentEvent;
 use crate::types::*;
+use crate::types::ToolRender;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+
+// Implement ToolRender trait for each tool type, delegating to the existing methods
+impl ToolRender for BashTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <BashTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <BashTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <BashTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for ReadTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <ReadTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <ReadTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <ReadTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for WriteTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <WriteTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <WriteTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <WriteTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for GlobTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <GlobTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <GlobTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <GlobTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for GrepTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <GrepTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <GrepTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <GrepTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for FileEditTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <FileEditTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <FileEditTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <FileEditTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for SkillTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <SkillTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <SkillTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <SkillTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for MonitorTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <MonitorTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <MonitorTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <MonitorTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for SendUserFileTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <SendUserFileTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <SendUserFileTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <SendUserFileTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for WebBrowserTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <WebBrowserTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <WebBrowserTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <WebBrowserTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for WebFetchTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <WebFetchTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <WebFetchTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <WebFetchTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for WebSearchTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <WebSearchTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <WebSearchTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <WebSearchTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for NotebookEditTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <NotebookEditTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <NotebookEditTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <NotebookEditTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for TaskCreateTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <TaskCreateTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <TaskCreateTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <TaskCreateTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for TaskListTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <TaskListTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <TaskListTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <TaskListTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for TaskUpdateTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <TaskUpdateTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <TaskUpdateTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <TaskUpdateTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for TaskGetTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <TaskGetTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <TaskGetTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <TaskGetTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for TaskOutputTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <TaskOutputTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <TaskOutputTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <TaskOutputTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for TodoWriteTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <TodoWriteTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <TodoWriteTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <TodoWriteTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for CronCreateTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <CronCreateTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <CronCreateTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <CronCreateTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for CronDeleteTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <CronDeleteTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <CronDeleteTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <CronDeleteTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for CronListTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <CronListTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <CronListTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <CronListTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for ConfigTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <ConfigTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <ConfigTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <ConfigTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for EnterWorktreeTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <EnterWorktreeTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <EnterWorktreeTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <EnterWorktreeTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for ExitWorktreeTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <ExitWorktreeTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <ExitWorktreeTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <ExitWorktreeTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for EnterPlanModeTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <EnterPlanModeTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <EnterPlanModeTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <EnterPlanModeTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for ExitPlanModeTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <ExitPlanModeTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <ExitPlanModeTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <ExitPlanModeTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for AskUserQuestionTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <AskUserQuestionTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <AskUserQuestionTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <AskUserQuestionTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for ToolSearchTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <ToolSearchTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <ToolSearchTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <ToolSearchTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for TeamCreateTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <TeamCreateTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <TeamCreateTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <TeamCreateTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for TeamDeleteTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <TeamDeleteTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <TeamDeleteTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <TeamDeleteTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for SendMessageTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <SendMessageTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <SendMessageTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <SendMessageTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for SleepTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <SleepTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <SleepTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <SleepTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for LSPTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <LSPTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <LSPTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <LSPTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for RemoteTriggerTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <RemoteTriggerTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <RemoteTriggerTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <RemoteTriggerTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for ListMcpResourcesTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <ListMcpResourcesTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <ListMcpResourcesTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <ListMcpResourcesTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for ReadMcpResourceTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <ReadMcpResourceTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <ReadMcpResourceTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <ReadMcpResourceTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for BriefTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <BriefTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <BriefTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <BriefTool>::render_tool_result_message(self, content)
+    }
+}
+impl ToolRender for SyntheticOutputTool {
+    fn user_facing_name(&self, input: Option<&serde_json::Value>) -> String {
+        <SyntheticOutputTool>::user_facing_name(self, input)
+    }
+    fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        <SyntheticOutputTool>::get_tool_use_summary(self, input)
+    }
+    fn render_tool_result_message(&self, content: &serde_json::Value) -> Option<String> {
+        <SyntheticOutputTool>::render_tool_result_message(self, content)
+    }
+}
+
+/// Construct ToolRenderFns from any ToolRender implementor.
+/// The tool instance is wrapped in Arc so the render closures can share ownership.
+fn make_render_fns<T: ToolRender + 'static>(tool: T) -> crate::query_engine::ToolRenderFns {
+    let tool = Arc::new(tool);
+    let t2 = Arc::clone(&tool);
+    let t3 = Arc::clone(&tool);
+    crate::query_engine::ToolRenderFns {
+        user_facing_name: Arc::new(move |input| tool.user_facing_name(input)),
+        get_tool_use_summary: Some(Arc::new(move |input| t2.get_tool_use_summary(input))),
+        get_activity_description: None,
+        render_tool_result_message: Some(Arc::new(
+            move |content, _progress, _options| t3.render_tool_result_message(content),
+        )),
+    }
+}
 
 /// Register all built-in tool executors
 pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
@@ -61,7 +509,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("Bash".to_string(), bash_executor);
+    let bash_tool = BashTool::new();
+    let bash_rf = self::make_render_fns(bash_tool);
+    engine.register_tool_with_render("Bash".to_string(), bash_executor, bash_rf);
 
     // FileRead tool - register backfill function (expand file_path for observers)
     engine.register_tool_backfill(
@@ -91,7 +541,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("FileRead".to_string(), read_executor);
+    let read_tool = ReadTool::new();
+    let read_rf = self::make_render_fns(read_tool);
+    engine.register_tool_with_render("FileRead".to_string(), read_executor, read_rf);
 
     // FileWrite tool
     let write_executor = move |input: serde_json::Value,
@@ -108,7 +560,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("FileWrite".to_string(), write_executor);
+    let write_tool = WriteTool::new();
+    let write_rf = self::make_render_fns(write_tool);
+    engine.register_tool_with_render("FileWrite".to_string(), write_executor, write_rf);
     // FileWrite tool - register backfill function (expand file_path for observers)
     engine.register_tool_backfill(
         "FileWrite".to_string(),
@@ -137,7 +591,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("Glob".to_string(), glob_executor);
+    let glob_tool = GlobTool::new();
+    let glob_rf = self::make_render_fns(glob_tool);
+    engine.register_tool_with_render("Glob".to_string(), glob_executor, glob_rf);
 
     // Grep tool
     let grep_executor = move |input: serde_json::Value,
@@ -154,10 +610,11 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("Grep".to_string(), grep_executor);
+    let grep_tool = GrepTool::new();
+    let grep_rf = self::make_render_fns(grep_tool);
+    engine.register_tool_with_render("Grep".to_string(), grep_executor, grep_rf);
 
     // FileEdit tool - with rendering metadata for TUI display
-    let file_edit_tool = FileEditTool::new();
     let edit_executor = move |input: serde_json::Value,
                               ctx: &ToolContext|
           -> BoxFuture<Result<ToolResult, AgentError>> {
@@ -172,21 +629,8 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    // Clone Arc for each closure capture
-    let fns_user_facing = Arc::new(file_edit_tool);
-    let fns_summary = Arc::clone(&fns_user_facing);
-    let fns_render = Arc::clone(&fns_user_facing);
-    let render_fns = crate::query_engine::ToolRenderFns {
-        user_facing_name: Arc::new(move |input| fns_user_facing.user_facing_name(input)),
-        get_tool_use_summary: Some(Arc::new(move |input| {
-            fns_summary.get_tool_use_summary(input)
-        })),
-        get_activity_description: None,
-        render_tool_result_message: Some(Arc::new(move |content, _progress, _options| {
-            fns_render.render_tool_result_message(content)
-        })),
-    };
-    engine.register_tool_with_render("FileEdit".to_string(), edit_executor, render_fns);
+    let edit_rf = make_render_fns(FileEditTool::new());
+    engine.register_tool_with_render("FileEdit".to_string(), edit_executor, edit_rf);
     // FileEdit tool - register backfill function (expand file_path for observers)
     engine.register_tool_backfill(
         "FileEdit".to_string(),
@@ -218,7 +662,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("Skill".to_string(), skill_executor);
+    let skill_tool = SkillTool::new();
+    let skill_rf = self::make_render_fns(skill_tool);
+    engine.register_tool_with_render("Skill".to_string(), skill_executor, skill_rf);
 
     // Monitor tool
     let monitor_executor = move |input: serde_json::Value,
@@ -235,7 +681,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("Monitor".to_string(), monitor_executor);
+    let monitor_tool = MonitorTool::new();
+    let monitor_rf = self::make_render_fns(monitor_tool);
+    engine.register_tool_with_render("Monitor".to_string(), monitor_executor, monitor_rf);
 
     // SendUserFile tool
     let send_user_file_executor = move |input: serde_json::Value,
@@ -252,7 +700,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("send_user_file".to_string(), send_user_file_executor);
+    let send_user_file_tool = SendUserFileTool::new();
+    let send_user_file_rf = self::make_render_fns(send_user_file_tool);
+    engine.register_tool_with_render("send_user_file".to_string(), send_user_file_executor, send_user_file_rf);
 
     // WebBrowser tool
     let web_browser_executor = move |input: serde_json::Value,
@@ -269,7 +719,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("WebBrowser".to_string(), web_browser_executor);
+    let web_browser_tool = WebBrowserTool::new();
+    let web_browser_rf = self::make_render_fns(web_browser_tool);
+    engine.register_tool_with_render("WebBrowser".to_string(), web_browser_executor, web_browser_rf);
 
     // WebFetch tool
     let web_fetch_executor = move |input: serde_json::Value,
@@ -286,7 +738,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("WebFetch".to_string(), web_fetch_executor);
+    let web_fetch_tool = WebFetchTool::new();
+    let web_fetch_rf = self::make_render_fns(web_fetch_tool);
+    engine.register_tool_with_render("WebFetch".to_string(), web_fetch_executor, web_fetch_rf);
 
     // WebSearch tool
     let web_search_executor = move |input: serde_json::Value,
@@ -303,7 +757,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("WebSearch".to_string(), web_search_executor);
+    let web_search_tool = WebSearchTool::new();
+    let web_search_rf = self::make_render_fns(web_search_tool);
+    engine.register_tool_with_render("WebSearch".to_string(), web_search_executor, web_search_rf);
 
     // NotebookEdit tool
     let notebook_edit_executor = move |input: serde_json::Value,
@@ -320,7 +776,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("NotebookEdit".to_string(), notebook_edit_executor);
+    let notebook_edit_tool = NotebookEditTool::new();
+    let notebook_edit_rf = self::make_render_fns(notebook_edit_tool);
+    engine.register_tool_with_render("NotebookEdit".to_string(), notebook_edit_executor, notebook_edit_rf);
 
     // TaskCreate tool
     let task_create_executor = move |input: serde_json::Value,
@@ -337,7 +795,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("TaskCreate".to_string(), task_create_executor);
+    let task_create_tool = TaskCreateTool::new();
+    let task_create_rf = self::make_render_fns(task_create_tool);
+    engine.register_tool_with_render("TaskCreate".to_string(), task_create_executor, task_create_rf);
 
     // TaskList tool
     let task_list_executor = move |input: serde_json::Value,
@@ -354,7 +814,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("TaskList".to_string(), task_list_executor);
+    let task_list_tool = TaskListTool::new();
+    let task_list_rf = self::make_render_fns(task_list_tool);
+    engine.register_tool_with_render("TaskList".to_string(), task_list_executor, task_list_rf);
 
     // TaskUpdate tool
     let task_update_executor = move |input: serde_json::Value,
@@ -371,7 +833,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("TaskUpdate".to_string(), task_update_executor);
+    let task_update_tool = TaskUpdateTool::new();
+    let task_update_rf = self::make_render_fns(task_update_tool);
+    engine.register_tool_with_render("TaskUpdate".to_string(), task_update_executor, task_update_rf);
 
     // TaskGet tool
     let task_get_executor = move |input: serde_json::Value,
@@ -388,7 +852,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("TaskGet".to_string(), task_get_executor);
+    let task_get_tool = TaskGetTool::new();
+    let task_get_rf = self::make_render_fns(task_get_tool);
+    engine.register_tool_with_render("TaskGet".to_string(), task_get_executor, task_get_rf);
 
     // TaskOutput tool
     let task_output_executor = move |input: serde_json::Value,
@@ -405,7 +871,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("TaskOutput".to_string(), task_output_executor);
+    let task_output_tool = TaskOutputTool::new();
+    let task_output_rf = self::make_render_fns(task_output_tool);
+    engine.register_tool_with_render("TaskOutput".to_string(), task_output_executor, task_output_rf);
 
     // TodoWrite tool
     let todo_write_executor = move |input: serde_json::Value,
@@ -422,7 +890,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("TodoWrite".to_string(), todo_write_executor);
+    let todo_write_tool = TodoWriteTool::new();
+    let todo_write_rf = self::make_render_fns(todo_write_tool);
+    engine.register_tool_with_render("TodoWrite".to_string(), todo_write_executor, todo_write_rf);
 
     // CronCreate tool
     let cron_create_executor = move |input: serde_json::Value,
@@ -439,7 +909,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("CronCreate".to_string(), cron_create_executor);
+    let cron_create_tool = CronCreateTool::new();
+    let cron_create_rf = self::make_render_fns(cron_create_tool);
+    engine.register_tool_with_render("CronCreate".to_string(), cron_create_executor, cron_create_rf);
 
     // CronDelete tool
     let cron_delete_executor = move |input: serde_json::Value,
@@ -456,7 +928,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("CronDelete".to_string(), cron_delete_executor);
+    let cron_delete_tool = CronDeleteTool::new();
+    let cron_delete_rf = self::make_render_fns(cron_delete_tool);
+    engine.register_tool_with_render("CronDelete".to_string(), cron_delete_executor, cron_delete_rf);
 
     // CronList tool
     let cron_list_executor = move |input: serde_json::Value,
@@ -473,7 +947,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("CronList".to_string(), cron_list_executor);
+    let cron_list_tool = CronListTool::new();
+    let cron_list_rf = self::make_render_fns(cron_list_tool);
+    engine.register_tool_with_render("CronList".to_string(), cron_list_executor, cron_list_rf);
 
     // Config tool
     let config_executor = move |input: serde_json::Value,
@@ -490,7 +966,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("Config".to_string(), config_executor);
+    let config_tool = ConfigTool::new();
+    let config_rf = self::make_render_fns(config_tool);
+    engine.register_tool_with_render("Config".to_string(), config_executor, config_rf);
 
     // EnterWorktree tool
     let enter_worktree_executor = move |input: serde_json::Value,
@@ -507,7 +985,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("EnterWorktree".to_string(), enter_worktree_executor);
+    let enter_worktree_tool = EnterWorktreeTool::new();
+    let enter_worktree_rf = self::make_render_fns(enter_worktree_tool);
+    engine.register_tool_with_render("EnterWorktree".to_string(), enter_worktree_executor, enter_worktree_rf);
 
     // ExitWorktree tool
     let exit_worktree_executor = move |input: serde_json::Value,
@@ -524,7 +1004,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("ExitWorktree".to_string(), exit_worktree_executor);
+    let exit_worktree_tool = ExitWorktreeTool::new();
+    let exit_worktree_rf = self::make_render_fns(exit_worktree_tool);
+    engine.register_tool_with_render("ExitWorktree".to_string(), exit_worktree_executor, exit_worktree_rf);
 
     // EnterPlanMode tool
     let enter_plan_mode_executor = move |input: serde_json::Value,
@@ -541,7 +1023,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("EnterPlanMode".to_string(), enter_plan_mode_executor);
+    let enter_plan_mode_tool = EnterPlanModeTool::new();
+    let enter_plan_mode_rf = self::make_render_fns(enter_plan_mode_tool);
+    engine.register_tool_with_render("EnterPlanMode".to_string(), enter_plan_mode_executor, enter_plan_mode_rf);
 
     // ExitPlanMode tool
     let exit_plan_mode_executor = move |input: serde_json::Value,
@@ -558,7 +1042,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("ExitPlanMode".to_string(), exit_plan_mode_executor);
+    let exit_plan_mode_tool = ExitPlanModeTool::new();
+    let exit_plan_mode_rf = self::make_render_fns(exit_plan_mode_tool);
+    engine.register_tool_with_render("ExitPlanMode".to_string(), exit_plan_mode_executor, exit_plan_mode_rf);
 
     // AskUserQuestion tool
     let ask_user_question_executor = move |input: serde_json::Value,
@@ -575,7 +1061,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("AskUserQuestion".to_string(), ask_user_question_executor);
+    let ask_user_question_tool = AskUserQuestionTool::new();
+    let ask_user_question_rf = self::make_render_fns(ask_user_question_tool);
+    engine.register_tool_with_render("AskUserQuestion".to_string(), ask_user_question_executor, ask_user_question_rf);
 
     // ToolSearch tool
     let tool_search_executor = move |input: serde_json::Value,
@@ -592,7 +1080,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("ToolSearch".to_string(), tool_search_executor);
+    let tool_search_tool = ToolSearchTool::new();
+    let tool_search_rf = self::make_render_fns(tool_search_tool);
+    engine.register_tool_with_render("ToolSearch".to_string(), tool_search_executor, tool_search_rf);
 
     // TeamCreate tool
     let team_create_executor = move |input: serde_json::Value,
@@ -609,7 +1099,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("TeamCreate".to_string(), team_create_executor);
+    let team_create_tool = TeamCreateTool::new();
+    let team_create_rf = self::make_render_fns(team_create_tool);
+    engine.register_tool_with_render("TeamCreate".to_string(), team_create_executor, team_create_rf);
 
     // TeamDelete tool
     let team_delete_executor = move |input: serde_json::Value,
@@ -626,7 +1118,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("TeamDelete".to_string(), team_delete_executor);
+    let team_delete_tool = TeamDeleteTool::new();
+    let team_delete_rf = self::make_render_fns(team_delete_tool);
+    engine.register_tool_with_render("TeamDelete".to_string(), team_delete_executor, team_delete_rf);
 
     // SendMessage tool
     let send_message_executor = move |input: serde_json::Value,
@@ -643,7 +1137,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("SendMessage".to_string(), send_message_executor);
+    let send_message_tool = SendMessageTool::new();
+    let send_message_rf = self::make_render_fns(send_message_tool);
+    engine.register_tool_with_render("SendMessage".to_string(), send_message_executor, send_message_rf);
 
     // Sleep tool - wait for a duration without holding a shell process
     let sleep_executor = move |input: serde_json::Value,
@@ -660,7 +1156,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("Sleep".to_string(), sleep_executor);
+    let sleep_tool = SleepTool::new();
+    let sleep_rf = self::make_render_fns(sleep_tool);
+    engine.register_tool_with_render("Sleep".to_string(), sleep_executor, sleep_rf);
 
     // LSP tool - code intelligence via Language Server Protocol
     let lsp_executor = move |input: serde_json::Value,
@@ -677,7 +1175,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("LSP".to_string(), lsp_executor);
+    let lsp_tool = LSPTool::new();
+    let lsp_rf = self::make_render_fns(lsp_tool);
+    engine.register_tool_with_render("LSP".to_string(), lsp_executor, lsp_rf);
 
     // RemoteTrigger tool - manage remote agent triggers
     let remote_trigger_executor = move |input: serde_json::Value,
@@ -694,7 +1194,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("RemoteTrigger".to_string(), remote_trigger_executor);
+    let remote_trigger_tool = RemoteTriggerTool::new();
+    let remote_trigger_rf = self::make_render_fns(remote_trigger_tool);
+    engine.register_tool_with_render("RemoteTrigger".to_string(), remote_trigger_executor, remote_trigger_rf);
 
     // ListMcpResourcesTool - list MCP server resources
     let list_mcp_resources_executor = move |input: serde_json::Value,
@@ -711,9 +1213,12 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool(
+    let list_mcp_resources_tool = ListMcpResourcesTool::new();
+    let list_mcp_resources_rf = self::make_render_fns(list_mcp_resources_tool);
+    engine.register_tool_with_render(
         "ListMcpResourcesTool".to_string(),
         list_mcp_resources_executor,
+        list_mcp_resources_rf,
     );
 
     // ReadMcpResourceTool - read MCP resources
@@ -731,9 +1236,12 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool(
+    let read_mcp_resource_tool = ReadMcpResourceTool::new();
+    let read_mcp_resource_rf = self::make_render_fns(read_mcp_resource_tool);
+    engine.register_tool_with_render(
         "ReadMcpResourceTool".to_string(),
         read_mcp_resource_executor,
+        read_mcp_resource_rf,
     );
 
     // BriefTool (SendUserMessage) — primary visible output channel
@@ -751,7 +1259,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
             tool_clone.execute(input, &ctx2).await
         })
     };
-    engine.register_tool("SendUserMessage".to_string(), brief_executor);
+    let brief_tool = BriefTool::new();
+    let brief_rf = self::make_render_fns(brief_tool);
+    engine.register_tool_with_render("SendUserMessage".to_string(), brief_executor, brief_rf);
 
     // SyntheticOutputTool (StructuredOutput) — structured output enforcement
     let synthetic_output_executor =
@@ -768,7 +1278,9 @@ pub(crate) fn register_all_tool_executors(engine: &mut QueryEngine) {
                 tool_clone.execute(input, &ctx2).await
             })
         };
-    engine.register_tool("StructuredOutput".to_string(), synthetic_output_executor);
+    let synthetic_output_tool = SyntheticOutputTool::new();
+    let synthetic_output_rf = self::make_render_fns(synthetic_output_tool);
+    engine.register_tool_with_render("StructuredOutput".to_string(), synthetic_output_executor, synthetic_output_rf);
 }
 
 /// Subscriber info for fan-out event delivery

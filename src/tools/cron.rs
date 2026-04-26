@@ -94,6 +94,21 @@ impl CronCreateTool {
         Example: '*/5 * * * *' = every 5 minutes, '0 9 * * 1-5' = weekdays at 9am."
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "CronCreate".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["cron"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),
@@ -223,6 +238,21 @@ impl CronDeleteTool {
         "Delete a previously created scheduled task."
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "CronDelete".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["id"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),
@@ -290,6 +320,23 @@ impl CronListTool {
 
     pub fn description(&self) -> &str {
         "List all scheduled tasks."
+    }
+
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "CronList".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, _input: Option<&serde_json::Value>) -> Option<String> {
+        None
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        let text = content["content"].as_str()?;
+        let lines = text.lines().count();
+        Some(format!("{} lines", lines))
     }
 
     pub fn input_schema(&self) -> ToolInputSchema {

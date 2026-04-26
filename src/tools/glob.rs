@@ -21,6 +21,22 @@ impl GlobTool {
         "Find files by glob pattern (glob pattern matching for file discovery)"
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "Glob".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["pattern"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        let num = content["numFiles"].as_u64()?;
+        Some(format!("{} {}", num, if num == 1 { "file" } else { "files" }))
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),

@@ -66,6 +66,21 @@ impl TeamCreateTool {
         "Create a team of agents that can work in parallel. Teams enable swarm mode where agents collaborate on complex tasks."
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "TeamCreate".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["name"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),
@@ -201,6 +216,21 @@ impl TeamDeleteTool {
         "Delete a previously created team. All team members will be stopped and the team configuration will be removed."
     }
 
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "TeamDelete".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["name"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
+    }
+
     pub fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
             schema_type: "object".to_string(),
@@ -275,6 +305,21 @@ impl SendMessageTool {
 
     pub fn description(&self) -> &str {
         "Send a message to another agent. Use 'to: *' to broadcast to all agents. Supports direct messages, shutdown requests, and plan approvals."
+    }
+
+    pub fn user_facing_name(&self, _input: Option<&serde_json::Value>) -> String {
+        "SendMessage".to_string()
+    }
+
+    pub fn get_tool_use_summary(&self, input: Option<&serde_json::Value>) -> Option<String> {
+        input.and_then(|inp| inp["to"].as_str().map(String::from))
+    }
+
+    pub fn render_tool_result_message(
+        &self,
+        content: &serde_json::Value,
+    ) -> Option<String> {
+        content["content"].as_str().map(|s| s.to_string())
     }
 
     pub fn input_schema(&self) -> ToolInputSchema {

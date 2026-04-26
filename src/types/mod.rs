@@ -25,3 +25,4 @@ pub mod utils;
 
 // Re-exports for backward compatibility with existing code
 pub use api_types::*;
+pub use tools::ToolRender;
