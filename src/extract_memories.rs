@@ -764,6 +764,8 @@ mod tests {
             tool_calls: None,
             is_error: None,
             is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
         };
         let assistant_msg = Message {
@@ -774,6 +776,8 @@ mod tests {
             tool_calls: None,
             is_error: None,
             is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
         };
         let tool_msg = Message {
@@ -784,6 +788,8 @@ mod tests {
             tool_calls: None,
             is_error: None,
             is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
         };
 
@@ -803,6 +809,8 @@ mod tests {
                 tool_calls: None,
                 is_error: None,
                 is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
             },
             Message {
@@ -813,6 +821,8 @@ mod tests {
                 tool_calls: None,
                 is_error: None,
                 is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
             },
             Message {
@@ -823,6 +833,8 @@ mod tests {
                 tool_calls: None,
                 is_error: None,
                 is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
             },
         ];
@@ -844,6 +856,8 @@ mod tests {
             tool_calls: None,
             is_error: None,
             is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
         }];
 
@@ -867,6 +881,8 @@ mod tests {
                 tool_calls: None,
                 is_error: None,
                 is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
             })
             .collect();

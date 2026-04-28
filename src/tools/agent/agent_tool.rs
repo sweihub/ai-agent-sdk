@@ -11,6 +11,7 @@ use crate::query_engine::{QueryEngine, QueryEngineConfig};
 use crate::tools::types::{Tool, ToolInputSchema};
 use crate::types::ToolResult;
 use crate::types::{Message, ToolContext};
+use super::agent_tool_utils::extract_partial_result_from_engine;
 
 /// Configuration for the AgentTool, held behind an Arc for cloning into closures.
 #[derive(Clone)]
@@ -178,7 +179,7 @@ impl Tool for AgentTool {
             system_prompt: Some(system_prompt),
             max_turns,
             max_budget_usd: None,
-            max_tokens: 16384,
+            max_tokens: crate::utils::context::get_max_output_tokens_for_model(&subagent_model) as u32,
             fallback_model: None,
             user_context: HashMap::new(),
             system_context: HashMap::new(),
@@ -191,6 +192,7 @@ impl Tool for AgentTool {
             session_state: None,
             loaded_nested_memory_paths: std::collections::HashSet::new(),
             task_budget: None,
+            orphaned_permission: None,
         });
 
         // Register all tool executors on the sub-engine
@@ -281,7 +283,18 @@ impl Tool for AgentTool {
                         log::info!("[BackgroundAgent:{task_id}] {desc}: {result_text}");
                     }
                     Err(e) => {
-                        log::error!("[BackgroundAgent:{task_id}] {desc}: {e}");
+                        // Distinguish killed vs failed for background agents too
+                        let is_killed = matches!(e, AgentError::UserAborted);
+                        if is_killed {
+                            let partial = super::agent_tool_utils::extract_partial_result_from_engine(&sub_engine.messages)
+                                .unwrap_or_else(|| "No output produced".to_string());
+                            log::info!(
+                                "[BackgroundAgent:{task_id}] {desc}: Killed - partial: {}",
+                                partial
+                            );
+                        } else {
+                            log::error!("[BackgroundAgent:{task_id}] {desc}: Failed - {e}");
+                        }
                     }
                 }
             });
@@ -311,13 +324,45 @@ impl Tool for AgentTool {
                         was_persisted: None,
                     })
                 }
-                Err(e) => Ok(ToolResult {
-                    result_type: "text".to_string(),
-                    tool_use_id: "agent_tool".to_string(),
-                    content: format!("[Subagent: {}] Error: {}", description, e),
-                    is_error: Some(true),
-                    was_persisted: None,
-                }),
+                Err(e) => {
+                    // Distinguish abort/kill from other errors.
+                    // Matches TypeScript agentToolUtils.ts:638-681:
+                    // AbortError -> status 'killed' with finalMessage from extractPartialResult
+                    // Other errors -> status 'failed' with error message
+                    let is_killed = matches!(e, AgentError::UserAborted)
+                        || config.abort_controller.is_aborted();
+
+                    if is_killed {
+                        let partial = extract_partial_result_from_engine(&sub_engine.messages)
+                            .unwrap_or_else(|| "No output produced".to_string());
+                        log::info!(
+                            "[Subagent: {}] Killed - partial result: {}",
+                            description, partial
+                        );
+                        Ok(ToolResult {
+                            result_type: "text".to_string(),
+                            tool_use_id: "agent_tool".to_string(),
+                            content: format!(
+                                "[Subagent: {}] Status: killed\nFinal output: {}",
+                                description, partial
+                            ),
+                            is_error: Some(true),
+                            was_persisted: None,
+                        })
+                    } else {
+                        log::error!("[Subagent: {}] Failed: {}", description, e);
+                        Ok(ToolResult {
+                            result_type: "text".to_string(),
+                            tool_use_id: "agent_tool".to_string(),
+                            content: format!(
+                                "[Subagent: {}] Status: failed\nError: {}",
+                                description, e
+                            ),
+                            is_error: Some(true),
+                            was_persisted: None,
+                        })
+                    }
+                }
             }
         };
 

@@ -60,11 +60,9 @@ impl FileReadTool {
 
         // If path is absolute and doesn't exist, try to find it relative to cwd
         let final_path = if path_buf.is_absolute() && !path_buf.exists() {
-            // Extract filename and try relative to cwd
             if let Some(filename) = path_buf.file_name() {
                 std::path::Path::new(&context.cwd).join(filename)
             } else {
-                // Fallback: just use cwd for safety
                 std::path::Path::new(&context.cwd).join(path)
             }
         } else if path_buf.is_relative() {
@@ -75,6 +73,25 @@ impl FileReadTool {
 
         let content =
             fs::read_to_string(&final_path).map_err(|e| crate::error::AgentError::Io(e))?;
+
+        // Extract file extension for token estimation
+        let ext = final_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+
+        // Validate content token budget (two-phase: rough estimate first, then API)
+        // If rough estimate is under max/4, this returns immediately without API call
+        let model = std::env::var("AI_MODEL")
+            .ok()
+            .unwrap_or_else(|| crate::utils::model::get_main_loop_model());
+        if let Err(e) = crate::services::validate_content_tokens(
+            &content, ext, None, None, None, &model,
+        )
+        .await
+        {
+            return Err(crate::error::AgentError::Tool(e.to_string()));
+        }
 
         Ok(ToolResult {
             result_type: "text".to_string(),

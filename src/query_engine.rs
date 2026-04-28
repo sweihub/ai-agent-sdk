@@ -10,11 +10,14 @@ use crate::compact::{
 use crate::error::AgentError;
 use crate::hooks::{HookInput, HookRegistry};
 use crate::services::compact::microcompact::truncate_tool_result_content;
+use crate::services::api::errors::{sanitize_html_error, error_to_api_message, get_error_message_if_refusal, is_media_size_error};
 use crate::services::streaming::{
     STALL_THRESHOLD_MS, StallStats, StreamWatchdog, StreamingResult, StreamingToolExecutor,
     calculate_streaming_cost, cleanup_stream, get_nonstreaming_fallback_timeout_ms,
-    is_404_stream_creation_error, is_api_timeout_error, is_nonstreaming_fallback_disabled,
-    is_user_abort_error, release_stream_resources, validate_stream_completion,
+    is_404_stream_creation_error, is_429_only_error, is_529_error, is_api_timeout_error,
+    is_auth_error, is_nonstreaming_fallback_disabled, is_stale_connection_error,
+    is_user_abort_error, parse_max_tokens_context_overflow, release_stream_resources,
+    validate_stream_completion, FallbackTriggeredError, MAX_529_RETRIES, FLOOR_OUTPUT_TOKENS,
 };
 use crate::tool::Tool as ToolTrait;
 use crate::tool::{ProgressMessage, ToolResultRenderOptions};
@@ -25,6 +28,39 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::time::sleep as sleep_tokio;
+
+/// Emit an ApiRetry event to notify callers of retry progress.
+/// Matches TypeScript's createSystemAPIErrorMessage → api_retry subtype.
+fn emit_api_retry_event(
+    on_event: Option<&(dyn Fn(AgentEvent) + Send + Sync)>,
+    attempt: u32,
+    max_retries: u32,
+    retry_delay_ms: u64,
+    error_status: Option<u16>,
+    error: &str,
+) {
+    if let Some(cb) = on_event {
+        cb(AgentEvent::ApiRetry {
+            attempt,
+            max_retries,
+            retry_delay_ms,
+            error_status,
+            error: error.to_string(),
+        });
+    }
+}
+
+/// Emit a Done event with a pre-result session storage flush.
+/// Matches TypeScript's flushSessionStorage() before each result yield in QueryEngine.ts.
+fn emit_done_event(
+    on_event: &Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
+    result: QueryResult,
+) {
+    let _ = crate::utils::session_storage::flush_session_storage();
+    if let Some(cb) = on_event {
+        cb(AgentEvent::Done { result });
+    }
+}
 
 /// Format token count for human-readable display (e.g., "120.3k", "1.2m")
 fn format_tokens(tokens: u64) -> String {
@@ -222,6 +258,11 @@ pub struct QueryEngine {
     /// task_budget.remaining tracking across compaction boundaries.
     /// Decremented by pre-compact final context after each compaction.
     task_budget_remaining: Option<u64>,
+    /// Structured output retry count (for MAX_STRUCTURED_OUTPUT_RETRIES limit)
+    structured_output_retries: u32,
+    /// Whether the orphaned permission has been handled this engine lifetime.
+    /// Matches TypeScript's hasHandledOrphanedPermission flag.
+    has_handled_orphaned_permission: bool,
 }
 
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
@@ -235,6 +276,17 @@ pub struct PermissionDenial {
     pub tool_name: String,
     pub tool_use_id: String,
     pub tool_input: serde_json::Value,
+}
+
+/// Orphaned permission state for session resume.
+/// When a session is resumed from a point where a tool-use was waiting
+/// on a permission decision, this struct carries the pre-stored decision
+/// so the query engine can inject the synthetic result.
+#[derive(Debug, Clone)]
+pub struct OrphanedPermission {
+    pub tool_use_id: String,
+    pub assistant_message: Message,
+    pub permission_result: crate::permission::PermissionResult,
 }
 
 pub struct QueryEngineConfig {
@@ -279,6 +331,11 @@ pub struct QueryEngineConfig {
     /// API task_budget (distinct from tokenBudget +500k auto-continue feature).
     /// `total` is the budget for the whole agentic turn.
     pub task_budget: Option<TaskBudget>,
+    /// Orphaned permission for session-resume scenarios.
+    /// When present, the query engine injects the assistant message and a
+    /// synthetic tool-result reflecting the stored permission decision before
+    /// the main tool-call loop begins.
+    pub orphaned_permission: Option<OrphanedPermission>,
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +367,7 @@ impl Default for QueryEngineConfig {
             session_state: None,
             loaded_nested_memory_paths: std::collections::HashSet::new(),
             task_budget: None,
+            orphaned_permission: None,
         }
     }
 }
@@ -351,6 +409,8 @@ impl QueryEngine {
             ),
             start_time: None,
             task_budget_remaining: None,
+            structured_output_retries: 0,
+            has_handled_orphaned_permission: false,
         }
     }
 
@@ -895,6 +955,13 @@ impl QueryEngine {
     /// Preserves config, tool executors, and abort controller.
     pub fn reset(&mut self) {
         self.messages.clear();
+        self.reset_counters();
+    }
+
+    /// Reset only counters (turn count, usage, cost, recovery tracking).
+    /// Does NOT clear messages — preserves conversation state across errors
+    /// so the user can replay / continue (matches TypeScript behavior).
+    pub fn reset_counters(&mut self) {
         self.turn_count = 0;
         self.total_usage = TokenUsage::default();
         self.total_cost = 0.0;
@@ -907,6 +974,82 @@ impl QueryEngine {
         self.stop_hook_active = false;
         self.transition = None;
         self.pending_tool_use_summary = None;
+        self.structured_output_retries = 0;
+    }
+
+    /// Check if the last message represents a valid successful result.
+    /// Matches TypeScript's isResultSuccessful() at queryHelpers.ts:56:
+    /// - Assistant: has non-empty content and is not an API error message
+    /// - User: has tool_result blocks (valid terminal state after tool execution)
+    /// Does NOT check stop_reason — TS only validates message type/content.
+    fn is_result_successful(&self, _last_stop_reason: Option<&str>) -> bool {
+        let last = match self.messages.last() {
+            Some(m) => m,
+            None => return false,
+        };
+        match last.role {
+            crate::types::MessageRole::Assistant => {
+                !last.content.is_empty() && last.is_api_error_message != Some(true)
+            }
+            crate::types::MessageRole::User => {
+                // User message (tool results) is a valid terminal state
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Generate synthetic tool_result messages for orphaned tool_use blocks
+    /// in the last assistant message.  Called before terminal error handling
+    /// so that the conversation history remains well-formed (every tool_use
+    /// has a matching tool_result).
+    ///
+    /// Matches TypeScript's yieldMissingToolResultBlocks /
+    /// addOrphanedToolResults.
+    fn add_orphaned_tool_results(&mut self, reason: &str) {
+        // Collect the tool_call IDs from the last assistant message first
+        // (to avoid borrow conflicts with self.messages.push below)
+        let orphan_ids: Vec<(String, String)> = {
+            let last = match self.messages.last() {
+                Some(m) => m,
+                None => return,
+            };
+            if last.role != crate::types::MessageRole::Assistant {
+                return;
+            }
+            let tool_calls = match &last.tool_calls {
+                Some(tc) => tc,
+                None => return,
+            };
+            tool_calls.iter()
+                .map(|tc| (tc.id.clone(), tc.name.clone()))
+                .collect()
+        };
+        if orphan_ids.is_empty() {
+            return;
+        }
+
+        // Find tool_use IDs that already have a tool_result in the messages
+        let mut has_result = std::collections::HashSet::new();
+        for msg in &self.messages {
+            if msg.role == crate::types::MessageRole::Tool {
+                if let Some(id) = &msg.tool_call_id {
+                    has_result.insert(id.clone());
+                }
+            }
+        }
+        // Add synthetic tool_result for each orphaned tool_use
+        for (tc_id, tc_name) in orphan_ids {
+            if !has_result.contains(&tc_id) {
+                self.messages.push(crate::types::Message {
+                    role: crate::types::MessageRole::Tool,
+                    content: format!("Tool '{}' was not executed: {}", tc_name, reason),
+                    tool_call_id: Some(tc_id),
+                    is_error: Some(true),
+                    ..Default::default()
+                });
+            }
+        }
     }
 
     /// Attempt to auto-compact the conversation when token count exceeds threshold
@@ -1243,10 +1386,12 @@ impl QueryEngine {
             })
             .collect();
 
-        // Build request
+        // Build request with model-based compaction max_tokens (TS: compact.ts:1317-1320)
+        let compact_max_tokens = crate::utils::context::COMPACT_MAX_OUTPUT_TOKENS
+            .min(crate::utils::context::get_max_output_tokens_for_model(model)) as u32;
         let request_body = serde_json::json!({
             "model": model,
-            "max_tokens": 2048,
+            "max_tokens": compact_max_tokens,
             "messages": api_summary_messages,
         });
 
@@ -1458,6 +1603,58 @@ impl QueryEngine {
             });
         }
 
+        // Handle orphaned permission (only once per engine lifetime).
+        // Matches TypeScript QueryEngine.ts:397-408 where handleOrphanedPermission
+        // runs before the main query loop guarded by hasHandledOrphanedPermission.
+        if !self.has_handled_orphaned_permission {
+            if let Some(ref orphaned) = self.config.orphaned_permission {
+                self.has_handled_orphaned_permission = true;
+
+                // 1. Push the assistant message (containing the tool_use) to history
+                // Check if it's already present to avoid duplicates on CCR resume
+                let already_present = self.messages.iter().any(|m| {
+                    m.role == crate::types::MessageRole::Assistant
+                        && m.tool_calls.as_ref().is_some_and(|tc| {
+                            tc.iter().any(|tc| tc.id == orphaned.tool_use_id)
+                        })
+                });
+                if !already_present {
+                    self.messages.push(orphaned.assistant_message.clone());
+                }
+
+                // 2. Generate a synthetic tool result message with the permission decision
+                let result_content = match &orphaned.permission_result {
+                    crate::permission::PermissionResult::Allow(_) => {
+                        format!("Tool call {} is allowed", orphaned.tool_use_id)
+                    }
+                    crate::permission::PermissionResult::Deny(deny) => {
+                        format!("Tool call {} is denied: {}", orphaned.tool_use_id, deny.message)
+                    }
+                    crate::permission::PermissionResult::Ask(ask) => {
+                        format!(
+                            "Tool call {} requires confirmation: {}",
+                            orphaned.tool_use_id, ask.message
+                        )
+                    }
+                    crate::permission::PermissionResult::Passthrough { message, .. } => {
+                        format!("Tool call {} passed through: {}", orphaned.tool_use_id, message)
+                    }
+                };
+
+                self.messages.push(crate::types::Message {
+                    role: crate::types::MessageRole::Tool,
+                    content: result_content,
+                    tool_call_id: Some(orphaned.tool_use_id.clone()),
+                    ..Default::default()
+                });
+
+                log::debug!(
+                    "Handled orphaned permission for tool_use_id={}",
+                    orphaned.tool_use_id
+                );
+            }
+        }
+
         // Note: max_turns check is done AFTER turn completes (matching TypeScript)
         // See below after tool execution loop for the check
 
@@ -1592,10 +1789,10 @@ impl QueryEngine {
             let api_messages = self.build_api_messages()?;
 
             // Get API configuration
-            let api_key = self
+            let api_key: String = self
                 .config
                 .api_key
-                .as_ref()
+                .clone()
                 .ok_or_else(|| AgentError::Api("API key not provided".to_string()))?;
 
             let base_url = self
@@ -1616,7 +1813,12 @@ impl QueryEngine {
             // Build request with tools if available
             // Always use streaming for all backends (matching TypeScript behavior)
             // Non-streaming fallback will be used if streaming fails
-            let effective_max_tokens = self.max_output_tokens_override.unwrap_or(self.config.max_tokens);
+            // Resolve max_tokens: retry override > config override > model-based default
+            let effective_max_tokens = self
+                .max_output_tokens_override
+                .unwrap_or_else(|| {
+                    crate::utils::context::get_max_output_tokens_for_model(model) as u32
+                });
             let mut request_body = serde_json::json!({
                 "model": model,
                 "max_tokens": effective_max_tokens,
@@ -1674,9 +1876,14 @@ impl QueryEngine {
                             });
                         }
                         crate::types::api_types::ThinkingConfig::Enabled { budget_tokens } => {
+                            // Clamp thinking budget to max_output_tokens - 1 (TS: claude.ts:1624)
+                            let clamped_budget = std::cmp::min(
+                                effective_max_tokens.saturating_sub(1) as u32,
+                                *budget_tokens,
+                            );
                             request_body["thinking"] = serde_json::json!({
                                 "type": "enabled",
-                                "budget_tokens": budget_tokens
+                                "budget_tokens": clamped_budget
                             });
                         }
                         crate::types::api_types::ThinkingConfig::Disabled => {
@@ -1753,13 +1960,13 @@ impl QueryEngine {
 
             // Track if we need to fallback to alternate model
             // Matching TypeScript's attemptWithFallback logic
-            let mut use_fallback_model = false;
+            let mut attempt_with_fallback = false;
             let mut streaming_result: StreamingResult;
 
             // Model fallback loop - try primary model first, then fallback if rate limited
             loop {
-                // Use fallback model if primary failed with rate limit
-                let current_model = if use_fallback_model {
+                // Use fallback model if primary failed
+                let model_in_loop = if attempt_with_fallback {
                     self.config
                         .fallback_model
                         .as_ref()
@@ -1770,7 +1977,7 @@ impl QueryEngine {
                 };
 
                 // Update request body with current model
-                request_body["model"] = serde_json::json!(current_model);
+                request_body["model"] = serde_json::json!(model_in_loop);
 
                 // Check if non-streaming fallback is disabled (matching TypeScript)
                 if is_nonstreaming_fallback_disabled() {
@@ -1779,31 +1986,89 @@ impl QueryEngine {
                     ));
                 }
 
-                // Make API request with 429 retry and exponential backoff.
+                // Make API request with 429/529 retry and exponential backoff.
                 // Wraps the full streaming→non-streaming fallback flow.
-                streaming_result = match make_api_request_with_429_retry(
+                let retry_result = make_api_request_with_429_retry(
                     &self.http_client,
                     &url,
-                    api_key,
+                    &api_key,
                     request_body.clone(),
                     self.config.on_event.clone(),
+                    self.config.fallback_model.clone(),
+                    &model_in_loop,
+                    match self.config.thinking {
+                        Some(crate::types::api_types::ThinkingConfig::Enabled { budget_tokens }) => Some(budget_tokens),
+                        _ => None,
+                    },
                 )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(e) => {
-                        // Check if streaming failed with 429 (all retries exhausted)
-                        if is_429_error(&e) {
-                            eprintln!("Rate limit hit (429), exhausted 429 retries");
-                            if let Some(ref cb) = self.config.on_event {
-                                cb(AgentEvent::RateLimitStatus {
-                                    is_rate_limited: true,
-                                    retry_after_secs: None,
-                                });
+                .await;
+
+                match retry_result {
+                    RetryResult::Success(result) => {
+                        streaming_result = result;
+                        break;
+                    }
+                    RetryResult::FallbackTriggered(fb_error) => {
+                        // Only trigger once (attempt_with_fallback guard)
+                        if attempt_with_fallback {
+                            // Already attempted fallback, treat as terminal
+                            // Add orphaned tool results before terminal error
+                            self.add_orphaned_tool_results(&fb_error.to_string());
+
+                            // Fire StopFailure hooks (fire-and-forget)
+                            {
+                                let registry_clone = self.hook_registry.lock().unwrap().as_ref().cloned();
+                                if let Some(registry) = registry_clone {
+                                    let _ = crate::hooks::run_stop_failure_hooks(
+                                        &registry,
+                                        &fb_error.to_string(),
+                                        &self.config.cwd,
+                                    ).await;
+                                }
+                            }
+                            return Err(AgentError::Api(fb_error.to_string()));
+                        }
+
+                        attempt_with_fallback = true;
+
+                        // Yield missing tool result blocks for any orphaned tool_use
+                        self.add_orphaned_tool_results("Model fallback triggered");
+
+                        // Clear assistant message state for retry
+                        // (remove the last assistant message that had the failed tool calls)
+                        if let Some(last) = self.messages.last() {
+                            if last.role == crate::types::MessageRole::Assistant {
+                                self.messages.pop();
                             }
                         }
 
-                        // Handle user abort (matching TypeScript APIUserAbortError handling)
+                        // Update config model to fallback
+                        self.config.model = fb_error.fallback_model.clone();
+
+                        // Emit warning about model switch
+                        eprintln!(
+                            "Switched to {} due to high demand for {}",
+                            fb_error.fallback_model, fb_error.original_model
+                        );
+
+                        continue; // Retry with fallback model
+                    }
+                    RetryResult::RecreateClient(recreate_err) => {
+                        // Rebuild HTTP client and retry
+                        self.http_client = reqwest::Client::new();
+                        emit_api_retry_event(
+                            self.config.on_event.as_ref().map(|a| a.as_ref()),
+                            1,
+                            MAX_429_RETRIES,
+                            500,
+                            None,
+                            &format!("Recreating client after: {}", recreate_err),
+                        );
+                        sleep_tokio(std::time::Duration::from_millis(500)).await;
+                        continue; // Retry with fresh client
+                    }
+                    RetryResult::Terminal(e) => {
+                        // Handle user abort
                         if is_user_abort_error(&e) {
                             return Err(AgentError::UserAborted);
                         }
@@ -1815,12 +2080,31 @@ impl QueryEngine {
                             );
                         }
 
-                        // Check if this is a prompt-too-long error that should trigger reactive compact
+                        // Check if this is a prompt-too-long error
                         let error_str = e.to_string().to_lowercase();
                         let is_prompt_too_long = error_str.contains("413")
                             || error_str.contains("prompt_too_long")
                             || error_str.contains("prompt too long")
                             || error_str.contains("media too large");
+
+                        // --- Context collapse drain stage (before reactive compact) ---
+                        // Matches TypeScript: before reactive compact, try context collapse
+                        // recoverFromOverflow if transition is not collapse_drain_retry.
+                        if is_prompt_too_long
+                            && crate::services::context_collapse::is_context_collapse_enabled()
+                            && self.transition.as_deref() != Some("collapse_drain_retry")
+                        {
+                            let original_len = self.messages.len();
+                            let drained = crate::services::context_collapse::recover_from_overflow(
+                                self.messages.clone(),
+                            );
+                            // If the collapse function changed anything, use the result
+                            if drained.len() < original_len {
+                                self.messages = drained;
+                                self.transition = Some("collapse_drain_retry".to_string());
+                                continue; // Retry after collapse drain
+                            }
+                        }
 
                         if is_prompt_too_long {
                             eprintln!("Prompt too large (413), attempting reactive compact...");
@@ -1843,18 +2127,32 @@ impl QueryEngine {
                                     }
                                     self.messages = reactive_result.messages;
                                     self.execute_post_compact_hooks("Reactive compact applied after 413 error").await;
-                                    use_fallback_model = true;
+                                    self.transition = Some("reactive_compact_retry".to_string());
                                     continue; // Retry with compacted context
                                 }
                                 _ => {
                                     log::warn!(
-                                        "[reactive-compact] no improvement possible, falling through to non-streaming"
+                                        "[reactive-compact] no improvement possible, falling through"
                                     );
                                 }
                             }
+                            // Reactive compact didn't help - this is terminal
+                            // Add orphaned tool results before terminal error
+                            self.add_orphaned_tool_results(&e.to_string());
+
+                            // Fire StopFailure hooks (fire-and-forget, matches TypeScript)
+                            {
+                                let registry_clone = self.hook_registry.lock().unwrap().as_ref().cloned();
+                                if let Some(registry) = registry_clone {
+                                    let _ = crate::hooks::run_stop_failure_hooks(&registry, &e.to_string(), &self.config.cwd).await;
+                                }
+                            }
+                            return Err(e);
                         }
 
-                        // For all other errors (including exhausted 429 retries without fallback), return
+                        // Add orphaned tool results before terminal error
+                        self.add_orphaned_tool_results(&e.to_string());
+
                         // Fire StopFailure hooks (fire-and-forget, matches TypeScript)
                         {
                             let registry_clone = self.hook_registry.lock().unwrap().as_ref().cloned();
@@ -1864,15 +2162,42 @@ impl QueryEngine {
                         }
                         return Err(e);
                     }
-                };
-
-                // Successfully got result, break out of loop
-                break;
+                }
             }
 
             // Emit StreamRequestEnd — TUI can use this to hide spinner after API response
             if let Some(ref cb) = self.config.on_event {
                 cb(AgentEvent::StreamRequestEnd);
+            }
+
+            // Check for refusal before max_output_tokens check (matches TypeScript)
+            if let Some(refusal_msg) = get_error_message_if_refusal(
+                streaming_result.stop_reason.as_deref(),
+                &self.config.model,
+                false, // is_non_interactive
+            ) {
+                // Add the refusal as an API error message
+                self.messages.push(crate::types::Message {
+                    role: crate::types::MessageRole::Assistant,
+                    content: refusal_msg.content.clone().unwrap_or_default(),
+                    is_api_error_message: Some(true),
+                    error_details: refusal_msg.error_details.clone(),
+                    ..Default::default()
+                });
+                // Fire StopFailure hooks
+                {
+                    let registry_clone = self.hook_registry.lock().unwrap().as_ref().cloned();
+                    if let Some(registry) = registry_clone {
+                        let _ = crate::hooks::run_stop_failure_hooks(
+                            &registry,
+                            &refusal_msg.content.as_ref().map(|s| s.as_str()).unwrap_or("refusal"),
+                            &self.config.cwd,
+                        ).await;
+                    }
+                }
+                return Err(AgentError::Api(
+                    refusal_msg.content.unwrap_or_else(|| "Refusal".to_string()),
+                ));
             }
 
             // Execute post-sampling hooks after model response is complete
@@ -1930,45 +2255,49 @@ impl QueryEngine {
             // Check for tool calls in the streaming result
             if streaming_result.tool_calls.is_empty() {
                 // Check for max_output_tokens error and handle recovery
-                // Matching TypeScript's isWithheldMaxOutputTokens recovery logic
+                // Two-phase recovery matching TypeScript query.ts:1188-1256
                 if streaming_result.api_error.as_deref() == Some("max_output_tokens") {
-                    // Escalating retry: if we hit the limit, try with higher max_tokens
-                    // This fires once per turn, then falls through to multi-turn recovery if 64k also hits the cap
                     const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT: u32 = 3;
-                    const ESCALATED_MAX_TOKENS: u32 = 64_000;
+                    const ESCALATED_MAX_TOKENS: u64 = 64_000;
 
-                    if self.max_output_tokens_recovery_count < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT {
-                        // Escalate max_tokens for the retry (matches TypeScript escalation)
-                        self.max_output_tokens_override = Some(ESCALATED_MAX_TOKENS);
-
-                        // Inject recovery message to resume generation
-                        let recovery_message = crate::types::Message {
-                            role: crate::types::MessageRole::User,
-                            content: "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.".to_string(),
-                            ..Default::default()
-                        };
-
-                        // Add messages for recovery attempt
-                        let all_messages = std::mem::take(&mut self.messages);
-                        self.messages = all_messages;
-                        self.messages.push(recovery_message);
-
-                        // Increment recovery count
-                        self.max_output_tokens_recovery_count += 1;
-
-                        // Emit Thinking event for recovery attempt
+                    // Phase 1: Escalation (TS: query.ts:1188-1221)
+                    // If no override set and no env var, escalate to 64k and retry same request
+                    // Feature 'tengu_otk_slot_v1' always enabled per CLAUDE.md
+                    if self.max_output_tokens_override.is_none()
+                        && std::env::var(crate::constants::env::ai_code::MAX_OUTPUT_TOKENS).is_err()
+                    {
+                        self.max_output_tokens_override = Some(ESCALATED_MAX_TOKENS as u32);
                         if let Some(ref cb) = self.config.on_event {
                             cb(AgentEvent::Thinking {
                                 turn: self.turn_count + 1,
                             });
                         }
+                        continue;
+                    }
 
-                        // Continue to next iteration (retry the request)
+                    // Phase 2: Multi-turn recovery (TS: query.ts:1223-1252)
+                    // Inject meta recovery message, reset override to default tokens
+                    if self.max_output_tokens_recovery_count < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT {
+                        let recovery_message = crate::types::Message {
+                            role: crate::types::MessageRole::User,
+                            content: "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.".to_string(),
+                            is_meta: Some(true),
+                            ..Default::default()
+                        };
+                        self.messages.push(recovery_message);
+                        // Reset override so we go back to model-based default
+                        self.max_output_tokens_override = None;
+                        self.max_output_tokens_recovery_count += 1;
+
+                        if let Some(ref cb) = self.config.on_event {
+                            cb(AgentEvent::Thinking {
+                                turn: self.turn_count + 1,
+                            });
+                        }
                         continue;
                     }
 
                     // Recovery exhausted - return the error as final response
-                    // The content will be empty but we signal completion
                     if let Some(ref cb) = self.config.on_event {
                         cb(AgentEvent::Done {
                             result: crate::types::QueryResult {
@@ -2164,7 +2493,18 @@ impl QueryEngine {
                 self.turn_count = next_turn_count;
 
                 // Fire Stop hooks before finalizing (matches TypeScript handleStopHooks)
-                if !self.stop_hook_active {
+                // Short-circuit: if the last assistant message is an API error message,
+                // skip stop hooks to avoid the death spiral:
+                // error → hook blocking → retry → error → …
+                let last_is_api_error = self.messages.iter().rev().find_map(|m| {
+                    if m.role == crate::types::MessageRole::Assistant {
+                        Some(m.is_api_error_message == Some(true))
+                    } else {
+                        None
+                    }
+                }).unwrap_or(false);
+
+                if !self.stop_hook_active && !last_is_api_error {
                     self.stop_hook_active = true;
                     let stop_result = {
                         let registry_clone = self.hook_registry.lock().unwrap().as_ref().cloned();
@@ -2272,6 +2612,28 @@ impl QueryEngine {
                     crate::token_budget::TokenBudgetDecision::Stop { .. } => {
                         // Normal exit path
                     }
+                }
+
+                // Validate result before emitting (matches TypeScript isResultSuccessful check at QueryEngine.ts:1082)
+                let last_stop_reason = streaming_result.stop_reason.as_deref();
+                if !self.is_result_successful(last_stop_reason) {
+                    let error_detail = format!(
+                        "Invalid result state: last_message_type={:?}, stop_reason={:?}",
+                        self.messages.last().map(|m| &m.role),
+                        last_stop_reason
+                    );
+                    if let Some(ref cb) = self.config.on_event {
+                        cb(AgentEvent::Done {
+                            result: crate::types::QueryResult {
+                                text: final_text.clone(),
+                                usage: self.total_usage.clone(),
+                                num_turns: self.turn_count,
+                                duration_ms: self.query_duration_ms(),
+                                exit_reason: crate::types::ExitReason::ModelError { error: error_detail.clone() },
+                            },
+                        });
+                    }
+                    return Ok((final_text, crate::types::ExitReason::ModelError { error: error_detail.clone() }));
                 }
 
                 // Emit Done event (matches TypeScript yielding { type: 'result' })
@@ -3044,16 +3406,20 @@ const MAX_429_RETRIES: u32 = 5;
 const _429_RETRY_BASE_MS: u64 = 2000;
 /// Maximum delay between 429 retries in milliseconds
 const _429_RETRY_MAX_MS: u64 = 30_000;
+/// Maximum structured output retries
+const MAX_STRUCTURED_OUTPUT_RETRIES: u32 = 5;
 
-/// Check if an error is a rate limit (429) error
-fn is_429_error(error: &AgentError) -> bool {
-    let msg = error_to_message_for_retry(error);
-    let lower = msg.to_lowercase();
-    lower.contains("429")
-        || lower.contains("rate_limit")
-        || lower.contains("rate limit")
-        || lower.contains("overloaded")
-        || lower.contains("529")
+/// Result type for the retry loop.  Distinguishes between a successful API
+/// call, a model fallback that should be handled by the caller, client
+/// recreation (rebuild HTTP client and retry), and terminal errors.
+///
+/// Matches TypeScript's withRetry generator which throws
+/// FallbackTriggeredError or returns normally.
+enum RetryResult {
+    Success(StreamingResult),
+    FallbackTriggered(FallbackTriggeredError),
+    RecreateClient(AgentError),
+    Terminal(AgentError),
 }
 
 fn error_to_message_for_retry(error: &AgentError) -> String {
@@ -3064,8 +3430,8 @@ fn error_to_message_for_retry(error: &AgentError) -> String {
     }
 }
 
-/// Calculate delay with exponential backoff and jitter for 429 retries
-fn _calculate_429_delay(attempt: u32) -> u64 {
+/// Calculate delay with exponential backoff and jitter for retries.
+fn calculate_retry_delay(attempt: u32) -> u64 {
     let base = _429_RETRY_BASE_MS * 2u64.saturating_pow(attempt.saturating_sub(1));
     let capped = base.min(_429_RETRY_MAX_MS);
     // Add up to 25% jitter
@@ -3105,38 +3471,133 @@ async fn async_make_api_request(
     make_nonstreaming_request(client, url, api_key, request_body, on_event).await
 }
 
-/// Make an API request with 429 retry and exponential backoff.
-/// Retries the full streaming→non-streaming flow when rate-limited.
+/// Make an API request with 429/529 retry and exponential backoff.
+///
+/// Tracks consecutive 529 errors separately.  After MAX_529_RETRIES (3)
+/// consecutive 529s with a fallback model available, returns
+/// RetryResult::FallbackTriggered so the caller can switch models.
+///
+/// On stale connection (ECONNRESET/EPIPE) or auth errors (401), returns
+/// RetryResult::RecreateClient so the caller rebuilds the HTTP client.
+///
+/// On max-tokens-context-overflow, adjusts max_output_tokens and retries.
+///
+/// Returns RetryResult::Terminal for errors that cannot be retried.
+///
+/// Matches TypeScript's withRetry() generator in withRetry.ts.
 async fn make_api_request_with_429_retry(
     client: &reqwest::Client,
     url: &str,
     api_key: &str,
     request_body: serde_json::Value,
     on_event: Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
-) -> Result<StreamingResult, AgentError> {
-    let mut last_error: Option<AgentError> = None;
+    fallback_model: Option<String>,
+    current_model: &str,
+    thinking_budget_tokens: Option<u32>,
+) -> RetryResult {
+    let mut consecutive_529s: u32 = 0;
+    let mut last_error_str: Option<String> = None;
+
+    // We clone request_body so we can mutate max_tokens on overflow retries
+    let mut mutable_request = request_body.clone();
 
     for attempt in 0..=MAX_429_RETRIES {
-        match async_make_api_request(client, url, api_key, request_body.clone(), on_event.clone())
-            .await
+        match async_make_api_request(
+            client,
+            url,
+            api_key,
+            mutable_request.clone(),
+            on_event.clone(),
+        )
+        .await
         {
-            Ok(result) => return Ok(result),
-            Err(e) if is_429_error(&e) && attempt < MAX_429_RETRIES => {
-                let delay = _calculate_429_delay(attempt + 1);
-                eprintln!(
-                    "Rate limited (429), retrying in {}ms (attempt {}/{})",
-                    delay,
-                    attempt + 1,
-                    MAX_429_RETRIES
-                );
-                sleep_tokio(std::time::Duration::from_millis(delay)).await;
-                last_error = Some(e);
+            Ok(result) => return RetryResult::Success(result),
+            Err(e) => {
+                last_error_str = Some(e.to_string());
+
+                // --- 529 tracking: consecutive 529 errors ---
+                if is_529_error(&e) {
+                    consecutive_529s += 1;
+                    if consecutive_529s >= MAX_529_RETRIES {
+                        if let Some(ref fb) = fallback_model {
+                            return RetryResult::FallbackTriggered(FallbackTriggeredError {
+                                original_model: current_model.to_string(),
+                                fallback_model: fb.clone(),
+                            });
+                        }
+                        // No fallback model -- treat as terminal after max 529s
+                        if attempt >= MAX_429_RETRIES {
+                            return RetryResult::Terminal(e);
+                        }
+                    }
+                } else {
+                    // Non-529 error resets the consecutive counter
+                    consecutive_529s = 0;
+                }
+
+                // --- Stale connection or auth error: recreate client ---
+                if is_stale_connection_error(&e) || is_auth_error(&e) {
+                    return RetryResult::RecreateClient(e);
+                }
+
+                // --- Max tokens context overflow: adjust and retry ---
+                if let Some((input_tokens, _max_tokens, context_limit)) =
+                    parse_max_tokens_context_overflow(&e)
+                {
+                    let safety_buffer: u64 = 1000;
+                    let available = context_limit.saturating_sub(input_tokens).saturating_sub(safety_buffer);
+                    if available < FLOOR_OUTPUT_TOKENS {
+                        return RetryResult::Terminal(e);
+                    }
+                    // Ensure enough tokens for thinking + at least 1 output token (TS: withRetry.ts:418-422)
+                    let min_required = (thinking_budget_tokens.unwrap_or(0) as u64).saturating_add(1);
+                    let adjusted = std::cmp::max(FLOOR_OUTPUT_TOKENS, std::cmp::max(available, min_required));
+                    if let Some(max_t) = mutable_request.get_mut("max_tokens") {
+                        *max_t = serde_json::json!(adjusted as u32);
+                    }
+                    // Retry immediately with adjusted max_tokens
+                    continue;
+                }
+
+                // --- Pure 429 (not 529): retry with backoff ---
+                if is_429_only_error(&e) && attempt < MAX_429_RETRIES {
+                    let delay = calculate_retry_delay(attempt + 1);
+                    emit_api_retry_event(
+                        on_event.as_ref().map(|a| a.as_ref()),
+                        attempt + 1,
+                        MAX_429_RETRIES,
+                        delay,
+                        None,
+                        &e.to_string(),
+                    );
+                    sleep_tokio(std::time::Duration::from_millis(delay)).await;
+                    continue;
+                }
+
+                // --- 529 (below MAX_529_RETRIES): retry with backoff ---
+                if is_529_error(&e) && attempt < MAX_429_RETRIES {
+                    let delay = calculate_retry_delay(attempt + 1);
+                    emit_api_retry_event(
+                        on_event.as_ref().map(|a| a.as_ref()),
+                        attempt + 1,
+                        MAX_429_RETRIES,
+                        delay,
+                        None,
+                        &e.to_string(),
+                    );
+                    sleep_tokio(std::time::Duration::from_millis(delay)).await;
+                    continue;
+                }
+
+                // --- Terminal error ---
+                return RetryResult::Terminal(e);
             }
-            Err(e) => return Err(e),
         }
     }
 
-    Err(last_error.unwrap_or_else(|| AgentError::Api("429 retry exhausted".to_string())))
+    RetryResult::Terminal(AgentError::Api(last_error_str.unwrap_or_else(|| {
+        "Retry exhausted".to_string()
+    })))
 }
 
 /// Make non-streaming API request (fallback when streaming fails)
@@ -3189,7 +3650,8 @@ async fn make_nonstreaming_request(
         let error_text = response.text().await.unwrap_or_default();
         return Err(AgentError::Api(format!(
             "Non-streaming API error {}: {}",
-            status, error_text
+            status,
+            sanitize_html_error(&error_text)
         )));
     }
 
@@ -3428,16 +3890,17 @@ async fn make_anthropic_streaming_request(
     let status = response.status();
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
+        let sanitized = sanitize_html_error(&error_text);
         // Check for 404 stream creation error (matching TypeScript)
         if status.as_u16() == 404 {
             return Err(AgentError::Stream404CreationError(format!(
                 "Streaming endpoint returned 404: {}",
-                error_text
+                sanitized
             )));
         }
         return Err(AgentError::Api(format!(
             "Streaming API error {}: {}",
-            status, error_text
+            status, sanitized
         )));
     }
 

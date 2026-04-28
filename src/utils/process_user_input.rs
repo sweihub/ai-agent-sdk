@@ -579,6 +579,8 @@ fn process_text_prompt(
         attachments: None,
         tool_call_id: None,
         tool_calls: None,
+        is_api_error_message: None,
+        error_details: None,
         is_error: None,
         is_meta: None,
             uuid: None,
@@ -700,6 +702,8 @@ fn make_user_message(content: String, is_meta: Option<bool>) -> Message {
         tool_calls: None,
         is_error: None,
         is_meta,
+        is_api_error_message: None,
+        error_details: None,
     }
 }
 
@@ -714,6 +718,8 @@ fn make_system_message(content: String) -> Message {
         tool_calls: None,
         is_error: None,
         is_meta: None,
+        is_api_error_message: None,
+        error_details: None,
     }
 }
 
@@ -728,6 +734,8 @@ fn make_synthetic_caveat() -> Message {
         tool_calls: None,
         is_error: None,
         is_meta: Some(true),
+        is_api_error_message: None,
+        error_details: None,
     }
 }
 

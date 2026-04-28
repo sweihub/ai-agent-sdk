@@ -150,6 +150,46 @@ pub fn delete_session_storage(session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Flush all pending session storage writes to disk.
+/// Forces fsync on all session files to prevent data loss before error/success results.
+/// Matches TypeScript's flushSessionStorage() which calls getProject().flush().
+///
+/// In Rust, std::fs::write is synchronous but data may still be in OS page cache.
+/// This function ensures durability by calling fsync via File::sync_all().
+pub fn flush_session_storage() -> Result<(), String> {
+    let session_dir = get_session_storage_dir();
+    if !session_dir.exists() {
+        return Ok(()); // Nothing to flush
+    }
+
+    for entry in std::fs::read_dir(&session_dir)
+        .map_err(|e| format!("Failed to read session storage dir: {}", e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            // Flush transcript file
+            let transcript = entry.path().join("transcript.json");
+            if transcript.exists() {
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&transcript)
+                    .map_err(|e| format!("Failed to open {}: {}", transcript.display(), e))?;
+                let _ = f.sync_all(); // Best effort - don't fail on sync error
+            }
+            // Flush state file
+            let state = entry.path().join("state.json");
+            if state.exists() {
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&state)
+                    .map_err(|e| format!("Failed to open {}: {}", state.display(), e))?;
+                let _ = f.sync_all();
+            }
+        }
+    }
+    Ok(())
+}
+
 /// List all stored session IDs
 pub fn list_stored_sessions() -> Vec<String> {
     let dir = get_session_storage_dir();

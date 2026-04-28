@@ -261,7 +261,129 @@ pub fn is_404_stream_creation_error(error: &AgentError) -> bool {
         && (error_str.contains("Not Found") || error_str.contains("streaming"))
 }
 
+// ─── Fallback Triggered Error ───
+
+/// Error thrown after MAX_529_RETRIES consecutive 529 errors when a fallback
+/// model is available. Matches TypeScript's FallbackTriggeredError.
+#[derive(Debug, Clone)]
+pub struct FallbackTriggeredError {
+    pub original_model: String,
+    pub fallback_model: String,
+}
+
+impl std::fmt::Display for FallbackTriggeredError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Model fallback triggered: {} -> {}",
+            self.original_model, self.fallback_model
+        )
+    }
+}
+
+impl std::error::Error for FallbackTriggeredError {}
+
+/// Check if an AgentError wraps a FallbackTriggeredError.
+pub fn is_fallback_triggered_error(error: &AgentError) -> bool {
+    let msg = error.to_string();
+    msg.contains("Model fallback triggered")
+}
+
+/// Extract fallback info from an AgentError, if it's a FallbackTriggeredError.
+pub fn extract_fallback_error(error: &AgentError) -> Option<(String, String)> {
+    let msg = error.to_string();
+    const PREFIX: &str = "Model fallback triggered: ";
+    if msg.contains(PREFIX) {
+        // Parse "Model fallback triggered: original -> fallback"
+        if let Some(remainder) = msg.strip_prefix(PREFIX) {
+            if let Some(arrow_pos) = remainder.find(" -> ") {
+                let original = remainder[..arrow_pos].trim().to_string();
+                let fallback = remainder[arrow_pos + 4..].trim().to_string();
+                return Some((original, fallback));
+            }
+        }
+    }
+    None
+}
+
+// ─── 529 Error Detection ───
+
+/// Maximum consecutive 529 retries before triggering model fallback.
+pub const MAX_529_RETRIES: u32 = 3;
+
+/// Check if an error is a 529 (server overload) error.
+/// Matches TypeScript's is529Error.
+pub fn is_529_error(error: &AgentError) -> bool {
+    let msg = error.to_string();
+    let lower = msg.to_lowercase();
+    lower.contains("529")
+        || lower.contains("overloaded")
+        || lower.contains(r#""type":"overloaded_error""#)
+}
+
+/// Check if an error is a stale connection (ECONNRESET/EPIPE) that should
+/// trigger HTTP client recreation. Matches TypeScript's isStaleConnectionError.
+pub fn is_stale_connection_error(error: &AgentError) -> bool {
+    let msg = error.to_string();
+    let lower = msg.to_lowercase();
+    lower.contains("econnreset") || lower.contains("epipe") || lower.contains("connection reset")
+}
+
+/// Check if an error is an authentication failure (401) that should trigger
+/// client recreation / token refresh.
+pub fn is_auth_error(error: &AgentError) -> bool {
+    match error {
+        AgentError::Auth(_) => true,
+        AgentError::Api(msg) => {
+            let s = msg.to_lowercase();
+            s.contains("401") || s.contains("unauthorized") || s.contains("api key")
+        }
+        AgentError::Http(http_err) => {
+            let status = http_err.status();
+            status == Some(reqwest::StatusCode::UNAUTHORIZED)
+        }
+        _ => false,
+    }
+}
+
+// ─── Max Tokens Context Overflow ───
+
+/// Parse a max-tokens-context-overflow API error (400).
+/// Matches TypeScript's parseMaxTokensContextOverflowError.
+/// Example: "input length and `max_tokens` exceed context limit: 188059 + 20000 > 200000"
+pub fn parse_max_tokens_context_overflow(error: &AgentError) -> Option<(u64, u64, u64)> {
+    let msg = error.to_string();
+    if !msg.contains("input length and `max_tokens` exceed context limit") {
+        return None;
+    }
+
+    // Find pattern: N + M > L
+    let regex = regex::Regex::new(r"(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)").ok()?;
+    let caps = regex.captures(&msg)?;
+    let input_tokens: u64 = caps.get(1)?.as_str().parse().ok()?;
+    let max_tokens: u64 = caps.get(2)?.as_str().parse().ok()?;
+    let context_limit: u64 = caps.get(3)?.as_str().parse().ok()?;
+
+    Some((input_tokens, max_tokens, context_limit))
+}
+
+// Minimum output tokens floor when adjusting max_tokens
+pub const FLOOR_OUTPUT_TOKENS: u64 = 3000;
+
 // ─── Abort Handling ───
+
+/// Check if an error is a 429 rate limit error specifically (NOT 529).
+/// 529 is server overload, 429 is client rate limit. They have different
+/// retry semantics. This separates pure 429 from 529 which was being
+/// caught by a broad "429" or "529" check.
+/// Matches TypeScript's is429OnlyError.
+pub fn is_429_only_error(error: &AgentError) -> bool {
+    let msg = error.to_string();
+    let lower = msg.to_lowercase();
+    // Match 429 but explicitly exclude 529
+    (lower.contains("429") || lower.contains("rate_limit") || lower.contains("rate limit"))
+        && !lower.contains("529")
+}
 
 /// Check if an error is a user-initiated abort.
 /// Matches TypeScript's APIUserAbortError handling.

@@ -272,3 +272,39 @@ pub struct MaxOutputTokens {
 pub fn get_max_thinking_tokens_for_model(model: &str) -> u64 {
     get_model_max_output_tokens(model).upper_limit - 1
 }
+
+/// Feature flag: slot-reservation cap for max_tokens.
+/// Always enabled (matching TS feature('tengu_otk_slot_v1'), all features enabled).
+fn is_max_tokens_cap_enabled() -> bool {
+    true
+}
+
+/// Resolve the effective max_tokens for a given model.
+///
+/// TS source: src/services/api/claude.ts `getMaxOutputTokensForModel`
+///
+/// 1. Get model-specific { default, upperLimit } from `get_model_max_output_tokens`.
+/// 2. Apply slot-reservation cap: default = min(default, CAPPED_DEFAULT_MAX_TOKENS).
+/// 3. Apply env var override `AI_CODE_MAX_OUTPUT_TOKENS`, bounded to [default, upperLimit].
+/// 4. Return effective value.
+pub fn get_max_output_tokens_for_model(model: &str) -> u64 {
+    use crate::constants::env::ai_code::MAX_OUTPUT_TOKENS as ENV_MAX_OUTPUT_TOKENS;
+    use crate::utils::env_validation::validate_bounded_int_env_var;
+
+    let max_output = get_model_max_output_tokens(model);
+
+    let default_tokens = if is_max_tokens_cap_enabled() {
+        max_output.default.min(CAPPED_DEFAULT_MAX_TOKENS)
+    } else {
+        max_output.default
+    };
+
+    let env_value = std::env::var(ENV_MAX_OUTPUT_TOKENS).ok();
+    let result = validate_bounded_int_env_var(
+        ENV_MAX_OUTPUT_TOKENS,
+        env_value.as_deref(),
+        default_tokens as i64,
+        max_output.upper_limit as i64,
+    );
+    result.effective as u64
+}

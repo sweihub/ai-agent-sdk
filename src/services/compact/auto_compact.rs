@@ -248,7 +248,9 @@ pub async fn auto_compact_if_needed(
                     tool_calls: None,
                     is_error: None,
                     is_meta: Some(true),
-            uuid: None,
+                    is_api_error_message: None,
+                    error_details: None,
+                    uuid: None,
                 };
                 let summary_messages = if !compact_result.summary.is_empty() {
                     vec![crate::types::Message {
@@ -259,7 +261,9 @@ pub async fn auto_compact_if_needed(
                         tool_calls: None,
                         is_error: None,
                         is_meta: None,
-            uuid: None,
+                        is_api_error_message: None,
+                        error_details: None,
+                        uuid: None,
                     }]
                 } else {
                     vec![]

@@ -207,6 +207,21 @@ pub fn extract_partial_result(messages: &[serde_json::Value]) -> Option<String> 
     None
 }
 
+/// Extract a partial result string from a QueryEngine's message history.
+/// Used when a subagent is killed to preserve what it accomplished.
+/// Matches TypeScript's extractPartialResult but operates on engine Message type.
+pub fn extract_partial_result_from_engine(messages: &[crate::types::Message]) -> Option<String> {
+    for msg in messages.iter().rev() {
+        if msg.role != crate::types::MessageRole::Assistant {
+            continue;
+        }
+        if !msg.content.is_empty() {
+            return Some(msg.content.clone());
+        }
+    }
+    None
+}
+
 /// Get the name of the last tool_use block in a message.
 pub fn get_last_tool_use_name(message: &serde_json::Value) -> Option<String> {
     if message.get("type").and_then(|t| t.as_str()) != Some("assistant") {

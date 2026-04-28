@@ -151,6 +151,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             },
+            AgentEvent::ApiRetry {
+                attempt,
+                max_retries,
+                retry_delay_ms,
+                error_status,
+                error,
+            } => {
+                println!(
+                    "\n[Retry] attempt {}/{} in {}ms (status: {:?}, error: {})",
+                    attempt,
+                    max_retries,
+                    retry_delay_ms,
+                    error_status,
+                    error
+                );
+            },
         }
     };
 

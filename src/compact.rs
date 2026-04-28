@@ -124,9 +124,12 @@ pub const POST_COMPACT_MAX_TOKENS_PER_SKILL: u32 = 5_000;
 pub const POST_COMPACT_SKILLS_TOKEN_BUDGET: u32 = 25_000;
 
 /// Get effective context window size (total - output reserve)
+/// TS: autoCompact.ts getEffectiveContextWindowSize
 pub fn get_effective_context_window_size(model: &str) -> u32 {
+    let reserved_tokens_for_summary = crate::utils::context::get_max_output_tokens_for_model(model)
+        .min(crate::utils::context::COMPACT_MAX_OUTPUT_TOKENS) as u32;
     let context_window = get_context_window_for_model(model);
-    context_window.saturating_sub(MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+    context_window.saturating_sub(reserved_tokens_for_summary)
 }
 
 /// Get context window size for a model
@@ -793,7 +796,9 @@ fn create_file_restore_attachment(path: &str, content: &str) -> Message {
         tool_calls: None,
         is_error: None,
         is_meta: Some(true),
-            uuid: None,
+        is_api_error_message: None,
+        error_details: None,
+        uuid: None,
     }
 }
 
@@ -834,7 +839,9 @@ fn create_skill_restore_attachment(name: &str, content: &str) -> Message {
         tool_calls: None,
         is_error: None,
         is_meta: Some(true),
-            uuid: None,
+        is_api_error_message: None,
+        error_details: None,
+        uuid: None,
     }
 }
 
@@ -903,6 +910,8 @@ mod post_compact_tests {
             }]),
             is_error: None,
             is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
         }];
         let paths = collect_read_tool_file_paths(&messages);
@@ -924,6 +933,8 @@ mod post_compact_tests {
             }]),
             is_error: None,
             is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
             uuid: None,
         }];
         let paths = collect_read_tool_file_paths(&messages);

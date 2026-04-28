@@ -1466,6 +1466,8 @@ impl Agent {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
+        let default_max_tokens =
+            crate::utils::context::get_max_output_tokens_for_model(&model) as u32;
 
         Self {
             inner: std::sync::Arc::new(parking_lot::Mutex::new(AgentInner {
@@ -1476,7 +1478,7 @@ impl Agent {
                 system_prompt: None,
                 max_turns: 10,
                 max_budget_usd: None,
-                max_tokens: 16384,
+                max_tokens: default_max_tokens,
                 fallback_model: None,
                 thinking: None,
                 mcp_servers: None,
@@ -1660,6 +1662,7 @@ impl Agent {
                 session_state: None,
                 loaded_nested_memory_paths: std::collections::HashSet::new(),
                 task_budget: None,
+                orphaned_permission: None,
             };
             let mut engine = QueryEngine::new(config);
             register_all_tool_executors(&mut engine);
@@ -1780,7 +1783,7 @@ impl Agent {
             system_prompt: None,
             max_turns: 10,
             max_budget_usd: None,
-            max_tokens: 16384,
+            max_tokens: crate::utils::context::get_max_output_tokens_for_model(&model) as u32,
             fallback_model: None,
             user_context: std::collections::HashMap::new(),
             system_context: std::collections::HashMap::new(),
@@ -1793,6 +1796,7 @@ impl Agent {
             session_state: None,
             loaded_nested_memory_paths: std::collections::HashSet::new(),
             task_budget: None,
+            orphaned_permission: None,
         });
 
         // Snapshot parent context fields to thread into subagent closures
@@ -1952,7 +1956,10 @@ impl Agent {
         let tools = self.select_tools();
 
         let start = std::time::Instant::now();
-        let (response_text, exit_reason, current_model, usage, turns) = {
+        let query_result: Result<
+            (String, ExitReason, String, crate::types::TokenUsage, u32),
+            AgentError,
+        > = {
             let mut eng = engine.write();
 
             // Update per-query config
@@ -2010,15 +2017,84 @@ impl Agent {
                 );
             }
 
-            // Run the query — collect results before dropping the lock
-            let result = eng.submit_message(prompt).await?;
-            let response_text = result.0;
-            let exit_reason = result.1;
-            let current_model = eng.config.model.clone();
-            let usage = eng.get_usage();
-            let turns = eng.get_turn_count();
-            (response_text, exit_reason, current_model, usage, turns)
+            // Run the query — on error, broadcast Done with ModelError and preserve state
+            match eng.submit_message(prompt).await {
+                Ok(r) => Ok((
+                    r.0,
+                    r.1,
+                    eng.config.model.clone(),
+                    eng.get_usage(),
+                    eng.get_turn_count(),
+                )),
+                Err(e) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    // Do NOT reset messages — preserve state for user replay (matches TypeScript)
+                    // Only reset counters
+                    eng.reset_counters();
+
+                    // Detect image errors (ImageSizeError / ImageResizeError patterns)
+                    // Matches TypeScript: error instanceof ImageSizeError || ImageResizeError
+                    let is_image_error = crate::services::api::errors::is_media_size_error(&e.to_string())
+                        && e.to_string().to_lowercase().contains("image");
+
+                    if is_image_error {
+                        // Write image error as API error message
+                        eng.messages.push(crate::types::Message {
+                            role: crate::types::MessageRole::Assistant,
+                            content: e.to_string(),
+                            is_api_error_message: Some(true),
+                            error_details: Some(e.to_string()),
+                            ..Default::default()
+                        });
+                        // Flush session storage
+                        let _ = crate::utils::session_storage::flush_session_storage();
+                        // Broadcast Done with ImageError exit reason
+                        if let Some(ref cb) = eng.config.on_event {
+                            cb(AgentEvent::Done {
+                                result: QueryResult {
+                                    text: String::new(),
+                                    exit_reason: ExitReason::ImageError {
+                                        error: e.to_string(),
+                                    },
+                                    usage: Default::default(),
+                                    num_turns: 0,
+                                    duration_ms,
+                                },
+                            });
+                        }
+                    } else {
+                        // Write error as API error message in conversation (matches TypeScript)
+                        let api_err = crate::services::api::errors::error_to_api_message(&e.to_string(), None);
+                        eng.messages.push(crate::types::Message {
+                            role: crate::types::MessageRole::Assistant,
+                            content: api_err.content.clone().unwrap_or_default(),
+                            is_api_error_message: Some(true),
+                            error_details: api_err.error_details.clone(),
+                            ..Default::default()
+                        });
+                        // Flush session storage before error result (matches TypeScript flushSessionStorage)
+                        let _ = crate::utils::session_storage::flush_session_storage();
+                        // Broadcast Done event so the TUI unblocks
+                        if let Some(ref cb) = eng.config.on_event {
+                            cb(AgentEvent::Done {
+                                result: QueryResult {
+                                    text: String::new(),
+                                    exit_reason: ExitReason::ModelError {
+                                        error: e.to_string(),
+                                    },
+                                    usage: Default::default(),
+                                    num_turns: 0,
+                                    duration_ms,
+                                },
+                            });
+                        }
+                    }
+                    Err(e)
+                }
+            }
         }; // Lock released here
+
+        let (response_text, exit_reason, current_model, usage, turns) = query_result?;
 
         // Track model in case it changed (for recreation detection)
         if current_model != self.get_model() {

@@ -25,6 +25,12 @@ pub struct Message {
     /// Indicates if this is a meta/system message (e.g., from prependUserContext)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub is_meta: Option<bool>,
+    /// Indicates this assistant message was generated from an API error (not model-produced text)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub is_api_error_message: Option<bool>,
+    /// Structured error details for API error messages (raw API error string)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error_details: Option<String>,
 }
 
 impl Default for Message {
@@ -38,6 +44,8 @@ impl Default for Message {
             tool_calls: None,
             is_error: None,
             is_meta: None,
+            is_api_error_message: None,
+            error_details: None,
         }
     }
 }
@@ -696,6 +704,21 @@ pub enum AgentEvent {
     TokenUsage {
         usage: TokenUsage,
         cost: f64,
+    },
+    /// API retry progress — emitted during 429/529 retry backoff
+    /// Matches TypeScript's 'api_retry' subtype yielded by QueryEngine
+    /// from createSystemAPIErrorMessage in withRetry.ts
+    ApiRetry {
+        /// Current retry attempt (1-based)
+        attempt: u32,
+        /// Maximum retries configured
+        max_retries: u32,
+        /// Delay in milliseconds before next retry
+        retry_delay_ms: u64,
+        /// HTTP error status code that triggered the retry
+        error_status: Option<u16>,
+        /// Categorized error type (e.g., "rate_limit", "server_error")
+        error: String,
     },
 }
 

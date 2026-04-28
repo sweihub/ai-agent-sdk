@@ -758,7 +758,9 @@ fn create_system_message(content: &str) -> Message {
         tool_calls: None,
         is_error: None,
         is_meta: Some(true),
-            uuid: None,
+        is_api_error_message: None,
+        error_details: None,
+        uuid: None,
     }
 }
 

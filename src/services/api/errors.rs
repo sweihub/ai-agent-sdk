@@ -4,6 +4,29 @@
 /// Prefix for API error messages
 pub const API_ERROR_MESSAGE_PREFIX: &str = "API Error";
 
+/// Sanitize an HTTP error body: if it looks like an HTML error page
+/// (e.g., 502/503 from a reverse proxy), extract the page title instead
+/// of dumping the full HTML into the error message.
+pub fn sanitize_html_error(text: &str) -> String {
+    let lower = text.to_lowercase();
+    if lower.contains("<!doctype html") || lower.contains("<html") {
+        // Try to extract the <title>...</title> content
+        if let Some(title_start) = text.find("<title>") {
+            let after_start = &text[title_start + "<title>".len()..];
+            if let Some(title_end) = after_start.find("</title>") {
+                let title = after_start[..title_end].trim().to_string();
+                if !title.is_empty() {
+                    return title;
+                }
+            }
+        }
+        // No title found; just drop the HTML entirely
+        String::new()
+    } else {
+        text.to_string()
+    }
+}
+
 /// Check if text starts with API error prefix
 pub fn starts_with_api_error_prefix(text: &str) -> bool {
     text.starts_with(API_ERROR_MESSAGE_PREFIX)
@@ -626,6 +649,200 @@ pub fn get_error_message_if_refusal(
 /// Constant for no response requested
 pub const NO_RESPONSE_REQUESTED: &str = "NO_RESPONSE_REQUESTED";
 
+/// Map a raw error message to a rich `ApiErrorMessage` with structured content,
+/// error type, and optional error_details. Mirrors the TypeScript
+/// `getAssistantMessageFromError()` function.
+pub fn error_to_api_message(error_msg: &str, status: Option<u16>) -> ApiErrorMessage {
+    let lower = error_msg.to_lowercase();
+
+    // Aborted requests
+    if error_msg == "Request was aborted." || error_msg == "User aborted the request" {
+        return create_assistant_api_error_message_with_options(
+            "Request was aborted",
+            Some("aborted"),
+            Some(error_msg),
+        );
+    }
+
+    // Timeout errors
+    if lower.contains("timeout") || lower.contains("timed out") {
+        return create_assistant_api_error_message_with_options(
+            API_TIMEOUT_ERROR_MESSAGE,
+            Some("unknown"),
+            Some(error_msg),
+        );
+    }
+
+    // Repeated 529 errors
+    if error_msg.contains(REPEATED_529_ERROR_MESSAGE) {
+        return create_assistant_api_error_message_with_options(
+            REPEATED_529_ERROR_MESSAGE,
+            Some("server_overload"),
+            Some(error_msg),
+        );
+    }
+
+    // Rate limiting (429)
+    if status == Some(429) || lower.contains("rate_limit") || lower.contains("rate limit") {
+        return create_assistant_api_error_message_with_options(
+            "Rate limit exceeded. Please try again shortly.",
+            Some("rate_limit"),
+            Some(error_msg),
+        );
+    }
+
+    // Server overload (529)
+    if status == Some(529) || lower.contains("overloaded") {
+        return create_assistant_api_error_message_with_options(
+            "Server is overloaded. Retrying...",
+            Some("server_overload"),
+            Some(error_msg),
+        );
+    }
+
+    // Prompt too long (413)
+    if lower.contains(&PROMPT_TOO_LONG_ERROR_MESSAGE.to_lowercase())
+        || lower.contains("prompt is too long")
+        || (status == Some(413) && lower.contains("too long"))
+    {
+        return create_assistant_api_error_message_with_options(
+            PROMPT_TOO_LONG_ERROR_MESSAGE,
+            Some("invalid_request"),
+            Some(error_msg),
+        );
+    }
+
+    // PDF errors
+    if is_media_size_error(error_msg) && lower.contains("pdf") {
+        if lower.contains("password") {
+            return create_assistant_api_error_message_with_options(
+                &get_pdf_password_protected_error_message(false),
+                Some("invalid_request"),
+                Some(error_msg),
+            );
+        }
+        return create_assistant_api_error_message_with_options(
+            &get_pdf_too_large_error_message(false),
+            Some("invalid_request"),
+            Some(error_msg),
+        );
+    }
+
+    // Image size errors
+    if (status == Some(400) && lower.contains("image") && lower.contains("exceeds") && lower.contains("maximum"))
+        || (lower.contains("image exceeds") && lower.contains("maximum"))
+    {
+        return create_assistant_api_error_message_with_options(
+            &get_image_too_large_error_message(false),
+            Some("invalid_request"),
+            Some(error_msg),
+        );
+    }
+
+    // Request too large (413)
+    if status == Some(413) {
+        return create_assistant_api_error_message_with_options(
+            &get_request_too_large_error_message(false),
+            Some("invalid_request"),
+            Some(error_msg),
+        );
+    }
+
+    // Tool use mismatch
+    if status == Some(400) && error_msg.contains("`tool_use` ids were found without `tool_result`") {
+        return create_assistant_api_error_message_with_options(
+            &format!("{}: Tool use mismatch. Try /rewind to fix.", API_ERROR_MESSAGE_PREFIX),
+            Some("invalid_request"),
+            Some(error_msg),
+        );
+    }
+
+    // Duplicate tool use ID
+    if status == Some(400) && error_msg.contains("`tool_use` ids must be unique") {
+        return create_assistant_api_error_message_with_options(
+            &format!("{}: Duplicate tool use ID. Try /rewind to fix.", API_ERROR_MESSAGE_PREFIX),
+            Some("invalid_request"),
+            Some(error_msg),
+        );
+    }
+
+    // Invalid model
+    if status == Some(400) && lower.contains("invalid model") {
+        return create_assistant_api_error_message_with_options(
+            "Model is not available. Try /model to switch.",
+            Some("invalid_request"),
+            Some(error_msg),
+        );
+    }
+
+    // Credit balance too low
+    if lower.contains(&CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE.to_lowercase()) {
+        return create_assistant_api_error_message_with_options(
+            CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE,
+            Some("billing_error"),
+            Some(error_msg),
+        );
+    }
+
+    // Authentication errors
+    if lower.contains("x-api-key") || lower.contains("api key") && status == Some(401) {
+        return create_assistant_api_error_message_with_options(
+            INVALID_API_KEY_ERROR_MESSAGE,
+            Some("authentication_failed"),
+            Some(error_msg),
+        );
+    }
+
+    // Token revoked
+    if status == Some(403) && error_msg.contains("OAuth token has been revoked") {
+        return create_assistant_api_error_message_with_options(
+            TOKEN_REVOKED_ERROR_MESSAGE,
+            Some("authentication_failed"),
+            Some(error_msg),
+        );
+    }
+
+    // OAuth org not allowed
+    if (status == Some(401) || status == Some(403))
+        && error_msg.contains("OAuth authentication is currently not allowed for this organization")
+    {
+        return create_assistant_api_error_message_with_options(
+            OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE,
+            Some("authentication_failed"),
+            Some(error_msg),
+        );
+    }
+
+    // Generic auth errors
+    if status == Some(401) || status == Some(403) {
+        return create_assistant_api_error_message_with_options(
+            "Authentication failed.",
+            Some("authentication_failed"),
+            Some(error_msg),
+        );
+    }
+
+    // Connection errors
+    if lower.contains("connection") || lower.contains("ssl") || lower.contains("tls") {
+        return create_assistant_api_error_message_with_options(
+            "Connection error. Check your network and try again.",
+            Some("connection_error"),
+            Some(error_msg),
+        );
+    }
+
+    // Generic fallback — use the raw message prefixed with "API Error"
+    if lower.starts_with("api error") {
+        create_assistant_api_error_message_with_options(error_msg, Some("unknown"), Some(error_msg))
+    } else {
+        create_assistant_api_error_message_with_options(
+            &format!("{}: {}", API_ERROR_MESSAGE_PREFIX, error_msg),
+            Some("unknown"),
+            Some(error_msg),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,6 +910,28 @@ mod tests {
             categorize_retryable_api_error(500, "server error"),
             SDKAssistantMessageError::server_error
         );
+    }
+
+    #[test]
+    fn test_sanitize_html_error() {
+        // HTML with title
+        let html = "<html><head><title>502 Bad Gateway</title></head><body><p>error</p></body></html>";
+        assert_eq!(sanitize_html_error(html), "502 Bad Gateway");
+
+        // HTML without title
+        let html_no_title = "<html><body><p>error</p></body></html>";
+        assert_eq!(sanitize_html_error(html_no_title), "");
+
+        // DOCTYPE HTML
+        let doctype = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head>";
+        assert_eq!(sanitize_html_error(doctype), "503 Service Unavailable");
+
+        // Plain text error (not HTML) — returned as-is
+        let plain = "{\"error\":{\"message\":\"rate limited\"}}";
+        assert_eq!(sanitize_html_error(plain), "{\"error\":{\"message\":\"rate limited\"}}");
+
+        // Empty string
+        assert_eq!(sanitize_html_error(""), "");
     }
 
     #[test]
