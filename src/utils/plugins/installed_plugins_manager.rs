@@ -219,6 +219,76 @@ pub fn remove_plugin_installation(plugin_id: &str, scope: PluginScope, project_p
     );
 }
 
+/// Update a plugin's install path on disk only, without modifying in-memory state.
+pub fn update_installation_path_on_disk(
+    plugin_id: &str,
+    scope: PluginScope,
+    project_path: Option<&str>,
+    new_path: &str,
+    new_version: &str,
+    git_commit_sha: Option<&str>,
+) {
+    let mut data = match load_installed_plugins_from_disk() {
+        Ok(d) => d,
+        Err(e) => {
+            log::debug!(
+                "Cannot update {} on disk: failed to load installed plugins: {}",
+                plugin_id,
+                e
+            );
+            return;
+        }
+    };
+
+    let installations = match data.plugins.get_mut(plugin_id) {
+        Some(insts) => insts,
+        None => {
+            log::debug!(
+                "Cannot update {} on disk: plugin not found in installed plugins",
+                plugin_id
+            );
+            return;
+        }
+    };
+
+    let entry = installations.iter_mut().find(|e| {
+        e.scope == scope && e.project_path.as_deref() == project_path
+    });
+
+    if let Some(entry) = entry {
+        entry.install_path = new_path.to_string();
+        entry.version = Some(new_version.to_string());
+        entry.last_updated = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .to_string();
+        if let Some(sha) = git_commit_sha {
+            entry.git_commit_sha = Some(sha.to_string());
+        }
+
+        if let Err(e) = save_installed_plugins_v2(&data) {
+            log::error!("Failed to save installed plugins: {}", e);
+        }
+
+        // Clear cache since disk changed
+        clear_installed_plugins_cache();
+
+        log::debug!(
+            "Updated {} on disk to version {} at {}",
+            plugin_id,
+            new_version,
+            new_path
+        );
+    } else {
+        log::debug!(
+            "Cannot update {} on disk: no installation for scope {:?}",
+            plugin_id,
+            scope
+        );
+    }
+}
+
 /// Load installed plugins directly from disk, bypassing all caches.
 pub fn load_installed_plugins_from_disk()
 -> Result<InstalledPluginsFileV2, Box<dyn std::error::Error + Send + Sync>> {

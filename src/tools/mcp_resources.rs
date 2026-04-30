@@ -1,5 +1,8 @@
 // Source: ~/claudecode/openclaudecode/src/tools/ListMcpResourcesTool/ListMcpResourcesTool.ts
 use crate::error::AgentError;
+use crate::services::mcp::client::{
+    ensure_connected_client, fetch_resources_for_client, get_all_mcp_connections,
+};
 use crate::types::*;
 
 pub const LIST_MCP_RESOURCES_TOOL_NAME: &str = "ListMcpResourcesTool";
@@ -55,16 +58,78 @@ impl ListMcpResourcesTool {
         input: serde_json::Value,
         _context: &ToolContext,
     ) -> Result<ToolResult, AgentError> {
-        let _server_filter = input["server"].as_str();
+        let server_filter = input["server"].as_str();
 
-        // MCP server integration would go here
-        // For now, return a not-available message
+        // Get MCP connections from global registry
+        let connections = get_all_mcp_connections();
+
+        if connections.is_empty() {
+            return Ok(ToolResult {
+                result_type: "text".to_string(),
+                tool_use_id: "".to_string(),
+                content: "No MCP servers configured. Configure MCP servers to list their resources."
+                    .to_string(),
+                is_error: Some(false),
+                was_persisted: None,
+            });
+        }
+
+        let mut all_resources: Vec<serde_json::Value> = vec![];
+        let mut errors: Vec<String> = vec![];
+
+        for (name, conn) in &connections {
+            // Filter by server name if specified
+            if let Some(filter) = server_filter {
+                if name.to_lowercase() != filter.to_lowercase() {
+                    continue;
+                }
+            }
+
+            // Ensure the client is connected
+            match ensure_connected_client(conn.clone()).await {
+                Ok(_) => {
+                    let resources = fetch_resources_for_client(&conn).await;
+                    for resource in resources {
+                        all_resources.push(serde_json::json!({
+                            "uri": resource.uri,
+                            "name": resource.name,
+                            "description": resource.description,
+                            "mimeType": resource.mime_type,
+                            "server": resource.server,
+                        }));
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("{}: {}", name, e));
+                }
+            }
+        }
+
+        if server_filter.is_some() && all_resources.is_empty() && errors.is_empty() {
+            return Ok(ToolResult {
+                result_type: "text".to_string(),
+                tool_use_id: "".to_string(),
+                content: format!(
+                    "MCP server '{}' not found or not connected among {} configured servers.",
+                    server_filter.unwrap(),
+                    connections.len()
+                ),
+                is_error: Some(false),
+                was_persisted: None,
+            });
+        }
+
+        let result = serde_json::json!({
+            "resources": all_resources,
+            "errors": errors,
+            "total": all_resources.len(),
+        });
+
         Ok(ToolResult {
             result_type: "text".to_string(),
             tool_use_id: "".to_string(),
-            content: "No MCP servers configured. Configure MCP servers to list their resources."
-                .to_string(),
-            is_error: None,
+            content: serde_json::to_string_pretty(&result).unwrap_or_default(),
+            is_error: Some(false),
             was_persisted: None,
         })
     }
@@ -84,5 +149,17 @@ mod tests {
     fn test_list_mcp_resources_tool_name() {
         let tool = ListMcpResourcesTool::new();
         assert_eq!(tool.name(), LIST_MCP_RESOURCES_TOOL_NAME);
+    }
+
+    #[tokio::test]
+    async fn test_list_mcp_resources_no_servers() {
+        crate::services::mcp::client::clear_mcp_connections();
+        let tool = ListMcpResourcesTool::new();
+        let input = serde_json::json!({});
+        let context = ToolContext::default();
+        let result = tool.execute(input, &context).await;
+        assert!(result.is_ok());
+        let content = result.unwrap().content;
+        assert!(content.contains("No MCP servers configured"));
     }
 }

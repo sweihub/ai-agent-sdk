@@ -31,4 +31,4 @@ mod xaa_idp_login;
 pub use auth::*;
 pub use mcp_string_utils::*;
 pub use normalization::normalize_name_for_mcp;
-pub use types::ConfigScope;
+pub use types::{ConfigScope, McpServerConnection};

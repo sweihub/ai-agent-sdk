@@ -5,9 +5,21 @@ use std::path::Path;
 
 use super::schemas::PluginManifest;
 
-/// Stub for git filesystem head retrieval.
-fn _git_head_stub(_dir_path: &str) -> Option<String> {
-    None
+/// Get the git commit SHA for a directory that is a git repository.
+pub fn get_git_commit_sha(dir_path: &str) -> Result<Option<String>, String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir_path)
+        .output()
+        .map_err(|e| format!("git rev-parse failed: {}", e))?;
+
+    if output.status.success() {
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !sha.is_empty() {
+            return Ok(Some(sha));
+        }
+    }
+    Ok(None)
 }
 
 /// Calculate the version for a plugin based on its source.
@@ -56,13 +68,6 @@ pub async fn calculate_plugin_version(
     // 5. Return 'unknown' as last resort
     log::debug!("No version found for {}, using 'unknown'", plugin_id);
     "unknown".to_string()
-}
-
-/// Get the git commit SHA for a directory.
-pub fn get_git_commit_sha(
-    _dir_path: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(None)
 }
 
 /// Extract version from a versioned cache path.

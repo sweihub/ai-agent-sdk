@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod background_task_registry;
 pub mod assemble;
 pub mod ask;
 pub mod brief;

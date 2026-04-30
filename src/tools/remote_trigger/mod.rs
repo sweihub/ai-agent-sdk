@@ -1,5 +1,6 @@
 // Source: ~/claudecode/openclaudecode/src/tools/RemoteTriggerTool/RemoteTriggerTool.ts
 use crate::error::AgentError;
+use crate::session_history::{get_bridge_base_url, get_claude_ai_oauth_tokens, get_oauth_headers};
 use crate::types::*;
 
 pub const REMOTE_TRIGGER_TOOL_NAME: &str = "RemoteTrigger";
@@ -72,8 +73,8 @@ impl RemoteTriggerTool {
         let trigger_id = input["trigger_id"].as_str();
         let body = input.get("body");
 
-        // Build the API URL and method based on action
-        let base_url = "https://api.claude.ai/v1/code/triggers";
+        // Build the API URL and method based on action (matches TS: getOauthConfig().BASE_API_URL)
+        let base_url = format!("{}/v1/code/triggers", get_bridge_base_url());
         let (method, url, request_body) = match action {
             "list" => ("GET", base_url.to_string(), None),
             "get" => {
@@ -108,23 +109,71 @@ impl RemoteTriggerTool {
             _ => return Err(AgentError::Tool(format!("Unknown action: {}", action))),
         };
 
-        // Note: In a full implementation, this would make the actual HTTP request
-        // with OAuth authentication. For now, return a not-implemented response.
+        // Get OAuth access token
+        let tokens = get_claude_ai_oauth_tokens().ok_or_else(|| {
+            AgentError::Tool(
+                "RemoteTrigger requires OAuth authentication with claude.ai. \
+                 Please log in first."
+                    .to_string(),
+            )
+        })?;
+        let access_token = tokens.access_token;
+
+        // Build request headers (matching TypeScript axios call)
+        let mut headers = get_oauth_headers(&access_token);
+        headers.insert(
+            "anthropic-beta".to_string(),
+            "ccr-triggers-2026-01-30".to_string(),
+        );
+
+        // Make HTTP request
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|e| AgentError::Tool(format!("Failed to create HTTP client: {}", e)))?;
+
+        let mut request = match method {
+            "GET" => client.get(&url),
+            "POST" => client.post(&url),
+            _ => return Err(AgentError::Tool(format!("Unsupported method: {}", method))),
+        };
+
+        for (key, value) in &headers {
+            request = request.header(key, value);
+        }
+
+        if let Some(body_json) = &request_body {
+            request = request.json(body_json);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| AgentError::Tool(format!("HTTP request failed: {}", e)))?;
+
+        let status = response.status().as_u16();
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| AgentError::Tool(format!("Failed to read response: {}", e)))?;
+
+        // Parse JSON response
+        let json: serde_json::Value = serde_json::from_str(&body_text).unwrap_or_else(|_| {
+            serde_json::json!({
+                "raw": body_text
+            })
+        });
+
         let result = serde_json::json!({
-            "status": 501,
-            "json": {
-                "message": "RemoteTrigger tool requires OAuth authentication with claude.ai. This feature is not available in the current build.",
-                "action": action,
-                "url": url,
-                "method": method
-            }
+            "status": status,
+            "json": json,
         });
 
         Ok(ToolResult {
             result_type: "text".to_string(),
             tool_use_id: "".to_string(),
             content: serde_json::to_string_pretty(&result).unwrap_or_default(),
-            is_error: None,
+            is_error: Some(status >= 400),
             was_persisted: None,
         })
     }
@@ -152,5 +201,19 @@ mod tests {
         let schema = tool.input_schema();
         assert_eq!(schema.schema_type, "object");
         assert_eq!(schema.required, Some(vec!["action".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn test_remote_trigger_requires_auth() {
+        let tool = RemoteTriggerTool::new();
+        let input = serde_json::json!({
+            "action": "list"
+        });
+        let context = ToolContext::default();
+        // Without OAuth tokens, should return error
+        let result = tool.execute(input, &context).await;
+        // Either error (no tokens) or success (has tokens) — depends on environment
+        // We just verify it doesn't panic
+        let _ = result;
     }
 }

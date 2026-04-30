@@ -657,7 +657,7 @@ pub fn init_cost_state(session_id: &str) {
 }
 
 /// Get the global cost state (singleton)
-fn get_global_cost_state() -> GlobalCostState {
+pub fn get_global_cost_state() -> GlobalCostState {
     GLOBAL_COST_STATE.lock().unwrap().clone()
 }
 

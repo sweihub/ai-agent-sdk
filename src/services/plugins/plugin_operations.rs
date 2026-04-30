@@ -267,23 +267,71 @@ pub(crate) fn is_builtin_plugin_id(plugin: &str) -> bool {
 }
 
 // ============================================================================
-// Settings Operations (stubs - would integrate with actual settings system)
+// Settings Operations
 // ============================================================================
 
 /// Get settings for a specific source
-fn get_settings_for_source(_source: SettingSource) -> Option<SettingsJson> {
-    // In production, this would load from the actual settings file
-    None
+fn get_settings_for_source(source: SettingSource) -> Option<SettingsJson> {
+    // Policy and flag settings are not persisted to editable files
+    match source {
+        SettingSource::PolicySettings | SettingSource::FlagSettings => None,
+        _ => {
+            let editable = match source {
+                SettingSource::UserSettings => {
+                    crate::utils::settings::EditableSettingSource::UserSettings
+                }
+                SettingSource::ProjectSettings => {
+                    crate::utils::settings::EditableSettingSource::ProjectSettings
+                }
+                SettingSource::LocalSettings => {
+                    crate::utils::settings::EditableSettingSource::LocalSettings
+                }
+                _ => return None,
+            };
+            let value = crate::utils::settings::get_settings_for_source(&editable)?;
+            let ep = value.get("enabledPlugins").and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                });
+            Some(SettingsJson { enabled_plugins: ep })
+        }
+    }
 }
 
 /// Update settings for a specific source
 /// Returns error message if the update failed
 fn update_settings_for_source(
-    _source: SettingSource,
-    _settings: &SettingsJson,
+    source: SettingSource,
+    settings: &SettingsJson,
 ) -> Result<(), String> {
-    // In production, this would write to the actual settings file
-    Ok(())
+    // Policy and flag settings are not written back
+    match source {
+        SettingSource::PolicySettings | SettingSource::FlagSettings => return Ok(()),
+        _ => { }
+    }
+
+    let editable = match source {
+        SettingSource::UserSettings => {
+            crate::utils::settings::EditableSettingSource::UserSettings
+        }
+        SettingSource::ProjectSettings => {
+            crate::utils::settings::EditableSettingSource::ProjectSettings
+        }
+        SettingSource::LocalSettings => {
+            crate::utils::settings::EditableSettingSource::LocalSettings
+        }
+        _ => return Ok(()),
+    };
+
+    let mut map = serde_json::Map::new();
+    if let Some(ref ep) = settings.enabled_plugins {
+        let ep_obj = serde_json::Value::Object(
+            ep.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        );
+        map.insert("enabledPlugins".to_string(), ep_obj);
+    }
+
+    crate::utils::settings::update_settings_for_source(&editable, &serde_json::Value::Object(map))
 }
 
 // ============================================================================
@@ -300,14 +348,68 @@ pub struct LoadedPlugin {
 
 /// Load all plugins (enabled and disabled)
 async fn load_all_plugins() -> (Vec<LoadedPlugin>, Vec<LoadedPlugin>) {
-    // In production, this would load plugins from disk/cache
-    (Vec::new(), Vec::new())
+    match crate::utils::plugins::loader::load_all_plugins().await {
+        Ok(result) => {
+            let enabled: Vec<LoadedPlugin> = result
+                .enabled
+                .into_iter()
+                .map(|p| LoadedPlugin {
+                    name: p.name,
+                    source: Some(p.source),
+                    manifest: serde_json::to_value(&p.manifest).ok(),
+                })
+                .collect();
+            let disabled: Vec<LoadedPlugin> = result
+                .disabled
+                .into_iter()
+                .map(|p| LoadedPlugin {
+                    name: p.name,
+                    source: Some(p.source),
+                    manifest: serde_json::to_value(&p.manifest).ok(),
+                })
+                .collect();
+            (enabled, disabled)
+        }
+        Err(_) => (Vec::new(), Vec::new()),
+    }
 }
 
 /// Load installed plugins from disk
 fn load_installed_plugins_from_disk() -> InstalledPluginsV2 {
-    // In production, this would load installed_plugins_v2.json
-    InstalledPluginsV2::default()
+    match crate::utils::plugins::installed_plugins_manager::load_installed_plugins_from_disk() {
+        Ok(data) => InstalledPluginsV2 {
+            plugins: data
+                .plugins
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        v.into_iter()
+                            .map(|e| {
+                                let scope_str = match e.scope {
+                                    crate::utils::plugins::schemas::PluginScope::User => "user",
+                                    crate::utils::plugins::schemas::PluginScope::Managed => "managed",
+                                    crate::utils::plugins::schemas::PluginScope::Project => "project",
+                                    crate::utils::plugins::schemas::PluginScope::Local => "local",
+                                };
+                                PluginInstallationEntry {
+                                    scope: scope_str.to_string(),
+                                    project_path: e.project_path,
+                                    install_path: e.install_path,
+                                    version: e.version,
+                                    git_commit_sha: e.git_commit_sha,
+                                }
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+        },
+        Err(e) => {
+            log::debug!("Failed to load installed plugins from disk: {}", e);
+            InstalledPluginsV2::default()
+        }
+    }
 }
 
 /// Load installed plugins V2
@@ -316,31 +418,50 @@ fn load_installed_plugins_v2() -> InstalledPluginsV2 {
 }
 
 /// Remove a plugin installation from disk
-fn remove_plugin_installation(_plugin_id: &str, _scope: &str, _project_path: Option<&str>) {
-    // In production, this would update installed_plugins_v2.json
-    log::debug!(
-        "Removing plugin installation: {} scope={} project_path={:?}",
-        _plugin_id,
-        _scope,
-        _project_path
+fn remove_plugin_installation(plugin_id: &str, scope: &str, project_path: Option<&str>) {
+    let scope_enum = match scope {
+        "user" => crate::utils::plugins::schemas::PluginScope::User,
+        "managed" => crate::utils::plugins::schemas::PluginScope::Managed,
+        "project" => crate::utils::plugins::schemas::PluginScope::Project,
+        "local" => crate::utils::plugins::schemas::PluginScope::Local,
+        _ => {
+            log::debug!("Invalid scope for plugin removal: {}", scope);
+            return;
+        }
+    };
+    crate::utils::plugins::installed_plugins_manager::remove_plugin_installation(
+        plugin_id,
+        scope_enum,
+        project_path,
     );
 }
 
 /// Update installation path on disk
 fn update_installation_path_on_disk(
-    _plugin_id: &str,
-    _scope: &str,
-    _project_path: Option<&str>,
-    _new_path: &str,
-    _new_version: &str,
-    _git_commit_sha: Option<&str>,
+    plugin_id: &str,
+    scope: &str,
+    project_path: Option<&str>,
+    new_path: &str,
+    new_version: &str,
+    git_commit_sha: Option<&str>,
 ) {
-    // In production, this would update installed_plugins_v2.json
-    log::debug!(
-        "Updating installation path: {} -> {} version={}",
-        _plugin_id,
-        _new_path,
-        _new_version
+    let scope_enum = match scope {
+        "user" => crate::utils::plugins::schemas::PluginScope::User,
+        "managed" => crate::utils::plugins::schemas::PluginScope::Managed,
+        "project" => crate::utils::plugins::schemas::PluginScope::Project,
+        "local" => crate::utils::plugins::schemas::PluginScope::Local,
+        _ => {
+            log::debug!("Invalid scope for installation path update: {}", scope);
+            return;
+        }
+    };
+    crate::utils::plugins::installed_plugins_manager::update_installation_path_on_disk(
+        plugin_id,
+        scope_enum,
+        project_path,
+        new_path,
+        new_version,
+        git_commit_sha,
     );
 }
 
@@ -350,22 +471,38 @@ fn update_installation_path_on_disk(
 
 /// Load known marketplaces config
 async fn load_known_marketplaces_config() -> HashMap<String, serde_json::Value> {
-    // In production, this would load known_marketplaces.json
-    HashMap::new()
+    match crate::utils::plugins::marketplace_manager::load_known_marketplaces_config().await {
+        Ok(config) => config
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::to_value(v).unwrap_or_else(|_| serde_json::Value::Null)))
+            .collect(),
+        Err(e) => {
+            log::debug!("Failed to load known marketplaces config: {}", e);
+            HashMap::new()
+        }
+    }
 }
 
 /// Get a marketplace by name
 async fn get_marketplace(name: &str) -> Option<PluginMarketplace> {
-    // In production, this would load the marketplace from cache/disk
-    log::debug!("Getting marketplace: {}", name);
-    None
+    match crate::utils::plugins::marketplace_manager::get_marketplace(name).await {
+        Ok(mp) => Some(mp),
+        Err(e) => {
+            log::debug!("Failed to get marketplace {}: {}", name, e);
+            None
+        }
+    }
 }
 
 /// Get a plugin by ID from marketplace
-async fn get_plugin_by_id(_plugin: &str) -> Option<PluginInfo> {
-    // In production, this would search all marketplaces for the plugin
-    log::debug!("Getting plugin by id: {}", _plugin);
-    None
+async fn get_plugin_by_id(plugin: &str) -> Option<PluginInfo> {
+    match crate::utils::plugins::marketplace_manager::get_plugin_by_id(plugin).await {
+        Some(result) => Some(PluginInfo {
+            entry: result.entry,
+            marketplace_install_location: result.marketplace_install_location,
+        }),
+        None => None,
+    }
 }
 
 // ============================================================================
@@ -374,17 +511,25 @@ async fn get_plugin_by_id(_plugin: &str) -> Option<PluginInfo> {
 
 /// Clear all caches
 fn clear_all_caches() {
-    log::debug!("Clearing all caches");
+    crate::utils::plugins::cache_utils::clear_all_caches();
 }
 
 /// Clear plugin cache with optional reason
 fn clear_plugin_cache(reason: &str) {
     log::debug!("Clearing plugin cache: {}", reason);
+    crate::utils::plugins::loader::clear_plugin_cache(None);
 }
 
 /// Mark a plugin version as orphaned
-async fn mark_plugin_version_orphaned(_install_path: &str) {
-    log::debug!("Marking plugin version orphaned: {}", _install_path);
+async fn mark_plugin_version_orphaned(install_path: &str) {
+    if let Err(e) =
+        crate::utils::plugins::cache_utils::mark_plugin_version_orphaned(
+            std::path::Path::new(install_path),
+        )
+        .await
+    {
+        log::debug!("Failed to mark plugin version orphaned: {}", e);
+    }
 }
 
 /// Cache a plugin (download to temp)
@@ -935,9 +1080,8 @@ fn sha256_hash_subdir(path: &str) -> String {
 // ============================================================================
 
 /// Check if a plugin is blocked by org policy
-fn is_plugin_blocked_by_policy(_plugin_id: &str) -> bool {
-    // In production, this would check managed-settings.json
-    false
+fn is_plugin_blocked_by_policy(plugin_id: &str) -> bool {
+    crate::utils::plugins::plugin_policy::is_plugin_blocked_by_policy(plugin_id)
 }
 
 // ============================================================================
@@ -945,8 +1089,8 @@ fn is_plugin_blocked_by_policy(_plugin_id: &str) -> bool {
 // ============================================================================
 
 /// Delete plugin data directory
-async fn delete_plugin_data_dir(_plugin_id: &str) -> Result<(), String> {
-    log::debug!("Deleting plugin data dir: {}", _plugin_id);
+async fn delete_plugin_data_dir(plugin_id: &str) -> Result<(), String> {
+    crate::utils::plugins::plugin_directories::delete_plugin_data_dir(plugin_id).await;
     Ok(())
 }
 
@@ -955,8 +1099,8 @@ async fn delete_plugin_data_dir(_plugin_id: &str) -> Result<(), String> {
 // ============================================================================
 
 /// Delete plugin options
-fn delete_plugin_options(_plugin_id: &str) {
-    log::debug!("Deleting plugin options: {}", _plugin_id);
+fn delete_plugin_options(plugin_id: &str) {
+    crate::utils::plugins::plugin_options_storage::delete_plugin_options(plugin_id);
 }
 
 // ============================================================================
@@ -965,8 +1109,30 @@ fn delete_plugin_options(_plugin_id: &str) {
 
 /// Get plugin editable scopes - returns set of enabled plugin IDs
 fn get_plugin_editable_scopes() -> BTreeSet<String> {
-    // In production, this would check all editable settings scopes
-    BTreeSet::new()
+    let mut result = BTreeSet::new();
+
+    // Check all editable settings sources (later overrides earlier)
+    let sources = [
+        SettingSource::UserSettings,
+        SettingSource::ProjectSettings,
+        SettingSource::LocalSettings,
+    ];
+
+    for source in sources {
+        if let Some(settings) = get_settings_for_source(source) {
+            if let Some(ep) = settings.enabled_plugins {
+                for (id, val) in ep {
+                    if val.as_bool() == Some(true) {
+                        result.insert(id);
+                    } else if val.as_bool() == Some(false) {
+                        result.remove(&id);
+                    }
+                }
+            }
+        }
+    }
+
+    result
 }
 
 // ============================================================================
@@ -974,8 +1140,30 @@ fn get_plugin_editable_scopes() -> BTreeSet<String> {
 // ============================================================================
 
 /// Find reverse dependents of a plugin
-fn find_reverse_dependents(_plugin_id: &str, _all_plugins: &[LoadedPlugin]) -> Vec<String> {
-    Vec::new()
+fn find_reverse_dependents(plugin_id: &str, all_plugins: &[LoadedPlugin]) -> Vec<String> {
+    // Convert to the type expected by the dependency resolver
+    let resolver_plugins: Vec<crate::utils::plugins::dependency_resolver::LoadedPlugin> = all_plugins
+        .iter()
+        .map(|p| {
+            let deps = p.manifest
+                .as_ref()
+                .and_then(|m| m.get("dependencies"))
+                .and_then(|d| d.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+            crate::utils::plugins::dependency_resolver::LoadedPlugin {
+                name: p.name.clone(),
+                source: p.source.clone().unwrap_or_default(),
+                enabled: true,
+                manifest: crate::utils::plugins::dependency_resolver::PluginManifest {
+                    dependencies: deps,
+                },
+            }
+        })
+        .collect();
+    crate::utils::plugins::dependency_resolver::find_reverse_dependents(
+        &plugin_id.to_string(),
+        &resolver_plugins,
+    )
 }
 
 /// Format reverse dependents suffix for warning messages
@@ -1004,19 +1192,96 @@ pub(crate) fn format_resolution_error(resolution: &str) -> String {
 
 /// Install a resolved plugin
 async fn install_resolved_plugin(
-    _plugin_id: &str,
-    _entry: &PluginMarketplaceEntry,
-    _scope: InstallableScope,
-    _marketplace_install_location: Option<&str>,
+    plugin_id: &str,
+    entry: &PluginMarketplaceEntry,
+    scope: InstallableScope,
+    marketplace_install_location: Option<&str>,
 ) -> InstallResolutionResult {
-    // In production, this would:
-    // 1. Check org policy
-    // 2. Write settings (enable the plugin)
-    // 3. Cache the plugin
-    // 4. Record version hint
-    InstallResolutionResult::Success {
-        dep_note: String::new(),
+    // 1. Check if plugin is blocked by policy
+    if crate::utils::plugins::plugin_policy::is_plugin_blocked_by_policy(plugin_id) {
+        return InstallResolutionResult::BlockedByPolicy {
+            plugin_name: entry.name.clone(),
+        };
     }
+
+    // 2. Check dependencies are not blocked (manifest not loaded yet,
+    // dependency resolution happens during plugin loading)
+
+    // 3. Cache the plugin and register in installed_plugins.json
+    let plugin_scope = match scope {
+        InstallableScope::User => crate::utils::plugins::schemas::PluginScope::User,
+        InstallableScope::Project => crate::utils::plugins::schemas::PluginScope::Project,
+        InstallableScope::Local => crate::utils::plugins::schemas::PluginScope::Local,
+    };
+
+    let project_path = match scope {
+        InstallableScope::Project | InstallableScope::Local => {
+            std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())
+        }
+        _ => None,
+    };
+
+    if !crate::utils::plugins::schemas::is_local_plugin_source(&entry.source) {
+        // External plugin - cache and register
+        if let Err(e) = crate::utils::plugins::plugin_installation_helpers::cache_and_register_plugin(
+            plugin_id,
+            entry,
+            plugin_scope,
+            project_path.as_deref(),
+            None, // local_source_path
+        ).await {
+            log::error!("Failed to cache plugin {}: {}", plugin_id, e);
+            return InstallResolutionResult::ResolutionFailed {
+                resolution: format!("Failed to cache plugin: {}", e),
+            };
+        }
+    } else if let Some(mpl) = marketplace_install_location {
+        // Local plugin - register from marketplace location
+        let local_rel_path = match &entry.source {
+            PluginSource::Relative(p) => p.as_str(),
+            PluginSource::Npm { package, .. } => package.as_str(),
+            PluginSource::Pip { package, .. } => package.as_str(),
+            PluginSource::Github { repo, .. } => repo.as_str(),
+            PluginSource::GitSubdir { repo, .. } => repo.as_str(),
+            PluginSource::Git { url, .. } => url.as_str(),
+            PluginSource::Url { url, .. } => url.as_str(),
+            PluginSource::Settings { source } => source.as_str(),
+        };
+        if let Err(e) = crate::utils::plugins::plugin_installation_helpers::cache_and_register_plugin(
+            plugin_id,
+            entry,
+            plugin_scope,
+            project_path.as_deref(),
+            Some(&format!("{}/{}", mpl, local_rel_path)),
+        ).await {
+            log::error!("Failed to register local plugin {}: {}", plugin_id, e);
+            return InstallResolutionResult::ResolutionFailed {
+                resolution: format!("Failed to register local plugin: {}", e),
+            };
+        }
+    } else {
+        return InstallResolutionResult::LocalSourceNoLocation {
+            plugin_name: entry.name.clone(),
+        };
+    }
+
+    // 4. Update settings to enable the plugin
+    let setting_source = scope_to_setting_source(scope);
+    let mut enabled_plugins = get_settings_for_source(setting_source.clone())
+        .and_then(|s| s.enabled_plugins)
+        .unwrap_or_default();
+    enabled_plugins.insert(plugin_id.to_string(), serde_json::Value::Bool(true));
+
+    if let Err(e) = update_settings_for_source(
+        setting_source,
+        &SettingsJson {
+            enabled_plugins: Some(enabled_plugins),
+        },
+    ) {
+        return InstallResolutionResult::SettingsWriteFailed { message: e };
+    }
+
+    InstallResolutionResult::Success { dep_note: String::new() }
 }
 
 // ============================================================================

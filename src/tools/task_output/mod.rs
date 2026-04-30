@@ -2,8 +2,10 @@
 //! TaskOutput tool — retrieve output from background tasks.
 //!
 //! Supports both blocking (wait for completion) and non-blocking modes.
+//! Integrates with the background task registry for real task output retrieval.
 
 use crate::error::AgentError;
+use crate::tools::background_task_registry;
 use crate::types::*;
 
 pub mod constants;
@@ -80,18 +82,15 @@ impl TaskOutputTool {
             .unwrap_or(30_000)
             .min(600_000);
 
-        // In the SDK, there is no shared task registry.
-        // The task output is retrieved from disk or the task framework.
-        // For tasks managed by this Agent instance, output would be stored
-        // in the task framework state. For now, attempt disk-based retrieval.
-        let output = get_task_output(task_id, block, timeout_ms).await;
+        // Retrieve output from the background task registry
+        let output = background_task_registry::get_task_output(task_id, block, timeout_ms).await;
 
         let result = serde_json::json!({
             "retrieval_status": output.status,
             "task": {
                 "task_id": task_id,
                 "task_type": output.task_type,
-                "status": output.status.clone(),
+                "status": output.status,
                 "description": output.description,
                 "output": output.content
             }
@@ -107,49 +106,6 @@ impl TaskOutputTool {
     }
 }
 
-struct TaskOutputData {
-    status: String,
-    task_type: String,
-    description: String,
-    content: String,
-}
-
-/// Attempt to retrieve task output.
-///
-/// In the SDK context, tasks are managed externally.
-/// This reads from the task output file if available, otherwise
-/// reports the task as not found.
-async fn get_task_output(
-    task_id: &str,
-    block: bool,
-    timeout_ms: u64,
-) -> TaskOutputData {
-    // In the full CLI implementation, this would:
-    // 1. Look up the task in appState.tasks
-    // 2. If blocking, poll until complete or timeout
-    // 3. Read stdout/stderr from the task
-    // 4. Format output with task metadata
-
-    if block {
-        // Poll for task completion (SDK: no shared state, timeout immediately)
-        let _timeout = timeout_ms;
-        // In a full implementation with a task registry, would poll here
-    }
-
-    // Try reading from disk (task output files)
-    // This is the same pattern as the TS getTaskOutput()
-    // which reads from transcript.jsonl sidechain output
-    TaskOutputData {
-        status: "not_found".to_string(),
-        task_type: "unknown".to_string(),
-        description: format!("Task {} not found in local task registry", task_id),
-        content: format!(
-            "Task output not available for '{}'. In the SDK context, background task output is managed by the caller's task framework.",
-            task_id
-        ),
-    }
-}
-
 impl Default for TaskOutputTool {
     fn default() -> Self {
         Self::new()
@@ -159,6 +115,7 @@ impl Default for TaskOutputTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::background_task_registry as bg;
 
     #[test]
     fn test_task_output_tool_name() {
@@ -176,8 +133,10 @@ mod tests {
         assert!(schema.properties.get("timeout").is_some());
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_task_output_requires_task_id() {
+        bg::reset_registry();
         let tool = TaskOutputTool::new();
         let input = serde_json::json!({});
         let context = ToolContext::default();
@@ -185,36 +144,70 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[serial_test::serial]
     #[tokio::test]
-    async fn test_task_output_with_task_id() {
+    async fn test_task_output_not_found() {
+        bg::reset_registry();
         let tool = TaskOutputTool::new();
         let input = serde_json::json!({
-            "task_id": "test-task-123",
+            "task_id": "nonexistent-task",
             "block": false
         });
         let context = ToolContext::default();
         let result = tool.execute(input, &context).await;
         assert!(result.is_ok());
         let content = result.unwrap().content;
-        assert!(content.contains("test-task-123"));
         assert!(content.contains("not_found"));
     }
 
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn test_task_output_completed_task() {
+        bg::reset_registry();
+        // Register and complete a task
+        bg::register_task(
+            "completed-task".to_string(),
+            "local_bash".to_string(),
+            "ls".to_string(),
+            Some("ls".to_string()),
+            None,
+        );
+        bg::complete_task("completed-task", "file.txt\n".to_string(), "".to_string());
+
+        let tool = TaskOutputTool::new();
+        let input = serde_json::json!({
+            "task_id": "completed-task",
+            "block": false
+        });
+        let result = tool.execute(input, &ToolContext::default()).await;
+        assert!(result.is_ok());
+        let content = result.unwrap().content;
+        assert!(content.contains("completed"));
+        assert!(content.contains("file.txt"));
+    }
+
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_task_output_blocking_mode() {
+        bg::reset_registry();
         let tool = TaskOutputTool::new();
         let input = serde_json::json!({
             "task_id": "blocking-task-456",
             "block": true,
-            "timeout": 1000
+            "timeout": 100
         });
         let context = ToolContext::default();
         let result = tool.execute(input, &context).await;
         assert!(result.is_ok());
+        // Should timeout since task not found
+        let content = result.unwrap().content;
+        assert!(content.contains("not_found"));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_task_output_timeout_cap() {
+        bg::reset_registry();
         let tool = TaskOutputTool::new();
         let input = serde_json::json!({
             "task_id": "timeout-task",

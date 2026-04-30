@@ -165,16 +165,43 @@ fn update_marketplace_status(
 
 /// Get declared marketplaces from settings/config
 fn get_declared_marketplaces() -> Vec<DeclaredMarketplace> {
-    // In production, this would read from settings files
-    // For now, return empty - actual implementation would parse
-    // managed-settings.json, user settings, project settings
-    Vec::new()
+    let declared = crate::utils::plugins::marketplace_manager::get_declared_marketplaces();
+    declared
+        .into_iter()
+        .map(|(name, entry)| DeclaredMarketplace {
+            name,
+            source: serde_json::to_value(&entry.source)
+                .ok()
+                .and_then(|v| v.to_string().into())
+                .unwrap_or_default(),
+        })
+        .collect()
 }
 
 /// Load known marketplaces config from disk (cache)
 async fn load_known_marketplaces_config() -> HashMap<String, InstalledMarketplaceConfig> {
-    // In production, this would load from known_marketplaces.json cache
-    HashMap::new()
+    match crate::utils::plugins::marketplace_manager::load_known_marketplaces_config().await {
+        Ok(config) => config
+            .into_iter()
+            .map(|(name, entry)| {
+                (
+                    name.clone(),
+                    InstalledMarketplaceConfig {
+                        name,
+                        install_location: entry.install_location,
+                        source: serde_json::to_value(&entry.source)
+                            .ok()
+                            .and_then(|v| v.to_string().into())
+                            .unwrap_or_default(),
+                    },
+                )
+            })
+            .collect(),
+        Err(e) => {
+            log::debug!("Failed to load known marketplaces config: {}", e);
+            HashMap::new()
+        }
+    }
 }
 
 /// Compute diff between declared and materialized marketplaces
@@ -224,13 +251,13 @@ async fn reconcile_marketplaces(
 
 /// Clear the marketplaces cache
 fn clear_marketplaces_cache() {
-    // In production, this would clear the in-memory cache of loaded marketplaces
-    log::debug!("Clearing marketplaces cache");
+    crate::utils::plugins::marketplace_manager::clear_marketplaces_cache();
 }
 
 /// Clear the plugin cache with an optional reason
 fn clear_plugin_cache(reason: &str) {
     log::debug!("Clearing plugin cache: {}", reason);
+    crate::utils::plugins::cache_utils::clear_all_plugin_caches();
 }
 
 /// Refresh active plugins - clears caches and reloads plugins

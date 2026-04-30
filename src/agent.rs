@@ -1469,7 +1469,7 @@ impl Agent {
         let default_max_tokens =
             crate::utils::context::get_max_output_tokens_for_model(&model) as u32;
 
-        Self {
+        let agent = Self {
             inner: std::sync::Arc::new(parking_lot::Mutex::new(AgentInner {
                 model,
                 api_key,
@@ -1493,7 +1493,10 @@ impl Agent {
                 engine: None,
                 broadcasters: EventBroadcasters::new(),
             })),
-        }
+        };
+        // Initialize cost tracking for this session (matches TS: global STATE starts at zero)
+        crate::services::model_cost::init_cost_state(&agent.get_session_id());
+        agent
     }
 
     /// Configure the model name.
@@ -2048,6 +2051,8 @@ impl Agent {
                         });
                         // Flush session storage
                         let _ = crate::utils::session_storage::flush_session_storage();
+                        // Save session costs before error result
+                        crate::services::model_cost::save_current_session_costs();
                         // Broadcast Done with ImageError exit reason
                         if let Some(ref cb) = eng.config.on_event {
                             cb(AgentEvent::Done {
@@ -2074,6 +2079,8 @@ impl Agent {
                         });
                         // Flush session storage before error result (matches TypeScript flushSessionStorage)
                         let _ = crate::utils::session_storage::flush_session_storage();
+                        // Save session costs before error result
+                        crate::services::model_cost::save_current_session_costs();
                         // Broadcast Done event so the TUI unblocks
                         if let Some(ref cb) = eng.config.on_event {
                             cb(AgentEvent::Done {
@@ -2100,6 +2107,8 @@ impl Agent {
         if current_model != self.get_model() {
             self.inner.lock().model = current_model;
         }
+        // Save session costs after successful query completion
+        crate::services::model_cost::save_current_session_costs();
 
         Ok(QueryResult {
             text: response_text,

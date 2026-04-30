@@ -328,6 +328,9 @@ pub async fn resume_session(
     messages = deduplicate_messages(messages);
     dropped += before_dedup - messages.len();
 
+    // Restore cost state for resumed session (matches TS: restoreCostStateForSession in sessionRestore.ts)
+    let _ = crate::services::model_cost::restore_cost_state_for_session(session_id);
+
     Ok(ResumeResult {
         messages,
         metadata: Some(data.metadata),

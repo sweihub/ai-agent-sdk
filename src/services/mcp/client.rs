@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rust_mcp_sdk::mcp_client::{
     client_runtime::create_client, ClientHandler, ClientRuntime, McpClientOptions,
@@ -24,6 +24,41 @@ use rust_mcp_sdk::{
 use crate::services::analytics::log_event;
 use crate::services::mcp::types::*;
 use crate::utils::http::get_user_agent;
+
+// =============================================================================
+// GLOBAL MCP SERVER CONNECTION REGISTRY
+// =============================================================================
+
+static MCP_CONNECTIONS: OnceLock<Mutex<HashMap<String, McpServerConnection>>> = OnceLock::new();
+
+fn get_mcp_connections() -> &'static Mutex<HashMap<String, McpServerConnection>> {
+    MCP_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Register an MCP server connection in the global registry.
+pub fn register_mcp_connection(name: String, connection: McpServerConnection) {
+    get_mcp_connections().lock().unwrap().insert(name, connection);
+}
+
+/// Get all MCP server connections from the global registry.
+pub fn get_all_mcp_connections() -> Vec<(String, McpServerConnection)> {
+    get_mcp_connections()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Get a specific MCP server connection by name.
+pub fn get_mcp_connection(name: &str) -> Option<McpServerConnection> {
+    get_mcp_connections().lock().unwrap().get(name).cloned()
+}
+
+/// Clear all MCP connections (for testing).
+pub fn clear_mcp_connections() {
+    get_mcp_connections().lock().unwrap().clear();
+}
 
 // =============================================================================
 // ERROR TYPES
@@ -745,6 +780,62 @@ pub async fn fetch_resources_for_client(client: &McpServerConnection) -> Vec<Ser
             server: server.name.clone(),
         })
         .collect()
+}
+
+/// Read a specific resource from a connected MCP server by URI.
+/// Returns text content, or binary data as base64.
+pub async fn read_mcp_resource(
+    client: &McpServerConnection,
+    uri: &str,
+) -> Result<serde_json::Value, String> {
+    use rust_mcp_sdk::schema::ReadResourceContent;
+
+    let McpServerConnection::Connected(server) = client else {
+        return Err(format!("MCP server '{}' is not connected", get_server_name(client)));
+    };
+    let Some(runtime) = &server.runtime else {
+        return Err(format!("No runtime available for '{}'", server.name));
+    };
+
+    let params = rust_mcp_sdk::schema::ReadResourceRequestParams {
+        uri: uri.to_string(),
+        meta: None,
+    };
+    let result = runtime
+        .request_resource_read(params)
+        .await
+        .map_err(|e| format!("Failed to read resource '{}': {}", uri, e))?;
+
+    let contents: Vec<serde_json::Value> = result
+        .contents
+        .into_iter()
+        .map(|c| match c {
+            ReadResourceContent::TextResourceContents(t) => serde_json::json!({
+                "uri": t.uri,
+                "mimeType": t.mime_type,
+                "text": t.text,
+            }),
+            ReadResourceContent::BlobResourceContents(b) => serde_json::json!({
+                "uri": b.uri,
+                "mimeType": b.mime_type,
+                "blob": b.blob,
+            }),
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "contents": contents,
+    }))
+}
+
+fn get_server_name(client: &McpServerConnection) -> &str {
+    match client {
+        McpServerConnection::Connected(s) => &s.name,
+        McpServerConnection::Failed(s) => &s.name,
+        McpServerConnection::NeedsAuth(s) => &s.name,
+        McpServerConnection::Pending(s) => &s.name,
+        McpServerConnection::Disabled(s) => &s.name,
+    }
 }
 
 /// Fetch commands (prompts) from a connected MCP server.

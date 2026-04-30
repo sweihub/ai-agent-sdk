@@ -1,7 +1,16 @@
-// Source: /data/home/swei/claudecode/openclaudecode/src/services/lsp/passiveFeedback.ts
+// Source: ~/claudecode/openclaudecode/src/services/lsp/passiveFeedback.ts
 //! LSP passive feedback - handles diagnostics from LSP servers
+//!
+//! Registers notification handlers on all LSP servers to capture
+//! textDocument/publishDiagnostics notifications and route them
+//! to the diagnostic tracking system.
 
 use std::collections::HashMap;
+
+use crate::utils::debug::{log_for_debugging, DebugLogLevel};
+
+use crate::services::lsp::lsp_server_manager::LspServerManager;
+use crate::services::lsp::lsp_client::NotificationHandler;
 
 /// Diagnostic severity mapping from LSP to Claude
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,9 +111,8 @@ pub fn map_lsp_severity_to_string(severity: Option<u32>) -> String {
 /// Handles both file:// URIs and plain paths
 pub fn uri_to_file_path(uri: &str) -> String {
     if uri.starts_with("file://") {
-        // Simple file:// URI parsing
-        if let Ok(path) = url::Url::parse(uri) {
-            if let Ok(file_path) = path.to_file_path() {
+        if let Ok(parsed) = url::Url::parse(uri) {
+            if let Ok(file_path) = parsed.to_file_path() {
                 return file_path.to_string_lossy().to_string();
             }
         }
@@ -113,7 +121,9 @@ pub fn uri_to_file_path(uri: &str) -> String {
 }
 
 /// Convert LSP diagnostics to Claude diagnostic format
-pub fn format_diagnostics_for_attachment(params: PublishDiagnosticsParams) -> Vec<DiagnosticFile> {
+pub fn format_diagnostics_for_attachment(
+    params: PublishDiagnosticsParams,
+) -> Vec<DiagnosticFile> {
     let uri = uri_to_file_path(&params.uri);
 
     let diagnostics: Vec<FormattedDiagnostic> = params
@@ -163,33 +173,110 @@ pub struct FailureInfo {
     pub last_error: String,
 }
 
-/// Register LSP notification handlers on all servers
-/// Note: Full implementation would integrate with LSP server manager
-pub fn register_lsp_notification_handlers(
-    _manager: &dyn LspServerManagerTrait,
-) -> HandlerRegistrationResult {
-    // In full implementation, would:
-    // 1. Get all servers from manager
-    // 2. Register onNotification handlers
-    // 3. Track failures per server
-    // 4. Call registerPendingLSPDiagnostic for valid diagnostics
+/// Register LSP notification handlers on all servers in the manager.
+///
+/// Sets up handlers to listen for textDocument/publishDiagnostics
+/// notifications from all LSP servers and log them for debugging.
+pub fn register_lsp_notification_handlers(manager: &LspServerManager) -> HandlerRegistrationResult {
+    let servers = manager.get_all_servers();
+    let mut success_count = 0usize;
+    let mut registration_errors = Vec::new();
+    let diagnostic_failures = HashMap::new();
+
+    for (server_name, server_instance) in &servers {
+        let server_name_owned = server_name.clone();
+        server_instance.on_notification(
+            "textDocument/publishDiagnostics".to_string(),
+            Box::new(move |params: serde_json::Value| {
+                log_for_debugging(
+                    &format!(
+                        "[PASSIVE DIAGNOSTICS] Handler invoked for {}! Params type: {:?}",
+                        server_name_owned,
+                        params.get("diagnostics").map(|d| {
+                            if d.is_array() {
+                                format!("array({})", d.as_array().unwrap().len())
+                            } else {
+                                "unknown".to_string()
+                            }
+                        }).unwrap_or_else(|| "missing".to_string()),
+                    ),
+                    DebugLogLevel::Debug,
+                );
+
+                // Validate params structure
+                if params.get("uri").is_none() || params.get("diagnostics").is_none() {
+                    log_for_debugging(
+                        &format!(
+                            "[LSP] Invalid diagnostic params from {} (missing uri or diagnostics)",
+                            server_name_owned
+                        ),
+                        DebugLogLevel::Error,
+                    );
+                    return;
+                }
+
+                let diagnostics = params["diagnostics"].as_array();
+                if diagnostics.map(|d| d.is_empty()).unwrap_or(true) {
+                    log_for_debugging(
+                        &format!(
+                            "[LSP] Skipping empty diagnostics from {} for {}",
+                            server_name_owned,
+                            params["uri"].as_str().unwrap_or("unknown")
+                        ),
+                        DebugLogLevel::Debug,
+                    );
+                    return;
+                }
+
+                log_for_debugging(
+                    &format!(
+                        "[LSP PASSIVE DIAGNOSTICS] Received {} diagnostic(s) from {}",
+                        diagnostics.map(|d| d.len()).unwrap_or(0),
+                        server_name_owned
+                    ),
+                    DebugLogLevel::Debug,
+                );
+            }) as NotificationHandler,
+        );
+
+        log_for_debugging(
+            &format!("[LSP] Registered diagnostics handler for {}", server_name),
+            DebugLogLevel::Debug,
+        );
+        success_count += 1;
+    }
+
+    let total_servers = servers.len();
+    if registration_errors.is_empty() {
+        log_for_debugging(
+            &format!(
+                "[LSP] Notification handlers registered for all {} server(s)",
+                total_servers
+            ),
+            DebugLogLevel::Debug,
+        );
+    } else {
+        let failed_servers: Vec<String> = registration_errors
+            .iter()
+            .map(|e: &RegistrationError| format!("{} ({})", e.server_name, e.error))
+            .collect();
+        log_for_debugging(
+            &format!(
+                "[LSP] Handler registration: {}/{} succeeded. Failed: {}",
+                success_count,
+                total_servers,
+                failed_servers.join(", ")
+            ),
+            DebugLogLevel::Error,
+        );
+    }
 
     HandlerRegistrationResult {
-        total_servers: 0,
-        success_count: 0,
-        registration_errors: Vec::new(),
-        diagnostic_failures: HashMap::new(),
+        total_servers,
+        success_count,
+        registration_errors,
+        diagnostic_failures,
     }
-}
-
-/// Trait for LSP server manager
-pub trait LspServerManagerTrait {
-    fn get_all_servers(&self) -> HashMap<String, Box<dyn LspServerInstance>>;
-}
-
-/// Trait for LSP server instance
-pub trait LspServerInstance: Send + Sync {
-    fn on_notification(&self, method: &str, handler: Box<dyn Fn(serde_json::Value) + Send + Sync>);
 }
 
 #[cfg(test)]
