@@ -703,6 +703,296 @@ fn test_compact_prompt_exists() {
 }
 
 // ============================================================================
+// Full context compaction flow integration tests (no real API needed)
+// ============================================================================
+
+/// Set an env var and immediately drop the guard to ensure cleanup before next test.
+fn with_env_var(var: &str, value: &str, f: impl FnOnce()) {
+    let prev = std::env::var(var).ok();
+    unsafe { std::env::set_var(var, value); }
+    f();
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
+        }
+    }
+}
+
+/// Auto-compact triggers when context exceeds a very low threshold.
+#[tokio::test]
+async fn test_auto_compact_triggers_on_large_conversation() {
+    let prev = std::env::var("AI_CONTEXT_WINDOW").ok();
+    unsafe { std::env::set_var("AI_CONTEXT_WINDOW", "1000"); }
+    clear_all_test_state();
+
+    let large_content = "word ".repeat(200);
+    let messages: Vec<Message> = (0..4)
+        .map(|i| Message {
+            role: if i % 2 == 0 { MessageRole::User } else { MessageRole::Assistant },
+            content: format!("Message {}: {}", i, large_content),
+            ..Default::default()
+        })
+        .collect();
+
+    let model = "claude-sonnet-4-6";
+    assert!(
+        ai_agent::should_auto_compact(&messages, model, None, 0),
+        "should_auto_compact should trigger with very low context window"
+    );
+
+    let result = ai_agent::services::compact::auto_compact::auto_compact_if_needed(
+        &messages, model, None, None, 0,
+    )
+    .await;
+    // Cleanup before assertions
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("AI_CONTEXT_WINDOW", v),
+            None => std::env::remove_var("AI_CONTEXT_WINDOW"),
+        }
+    }
+
+    assert!(result.was_compacted, "auto_compact_if_needed should compact");
+    assert!(
+        result.compaction_result.is_some(),
+        "should have compaction result"
+    );
+    assert_eq!(
+        result.consecutive_failures,
+        Some(0),
+        "consecutive failures should reset on success"
+    );
+}
+
+/// Auto-compact does NOT trigger when context is well within limits.
+#[tokio::test]
+async fn test_auto_compact_no_trigger_on_small_conversation() {
+    let prev = std::env::var("AI_CONTEXT_WINDOW").ok();
+    unsafe { std::env::set_var("AI_CONTEXT_WINDOW", "1000000"); }
+    clear_all_test_state();
+
+    let messages = vec![
+        Message {
+            role: MessageRole::User,
+            content: "Hello".to_string(),
+            ..Default::default()
+        },
+        Message {
+            role: MessageRole::Assistant,
+            content: "Hi there!".to_string(),
+            ..Default::default()
+        },
+    ];
+
+    let model = "claude-sonnet-4-6";
+    assert!(
+        !ai_agent::should_auto_compact(&messages, model, None, 0),
+        "should_auto_compact should NOT trigger with huge context window"
+    );
+
+    let result = ai_agent::services::compact::auto_compact::auto_compact_if_needed(
+        &messages, model, None, None, 0,
+    )
+    .await;
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("AI_CONTEXT_WINDOW", v),
+            None => std::env::remove_var("AI_CONTEXT_WINDOW"),
+        }
+    }
+
+    assert!(!result.was_compacted, "auto_compact_if_needed should NOT compact");
+}
+
+/// Compact messages preserves recent turns and removes older ones.
+#[tokio::test]
+async fn test_compact_messages_preserves_recent_turns() {
+    clear_all_test_state();
+
+    let unique_word = |i: usize| -> String {
+        format!("UNIQUEWORD{}", i)
+    };
+    let messages: Vec<Message> = (0..20)
+        .map(|i| {
+            let content = format!("{} {}", i, unique_word(i)).repeat(50);
+            Message {
+                role: if i % 2 == 0 { MessageRole::User } else { MessageRole::Assistant },
+                content,
+                ..Default::default()
+            }
+        })
+        .collect();
+
+    let last_content = messages.last().unwrap().content.clone();
+
+    let options = ai_agent::services::compact::compact::CompactOptions {
+        max_tokens: Some(200),
+        direction: ai_agent::services::compact::compact::CompactDirection::Smart,
+        create_boundary: true,
+        system_prompt: None,
+    };
+    let result = ai_agent::services::compact::compact::compact_messages(&messages, options)
+        .await
+        .expect("compaction should succeed");
+
+    assert!(result.success);
+    assert!(
+        result.messages_removed > 0,
+        "should have removed some messages, got {}",
+        result.messages_removed
+    );
+    assert!(
+        result.tokens_before > result.tokens_after,
+        "tokens should be reduced: {} -> {}",
+        result.tokens_before,
+        result.tokens_after
+    );
+
+    // The most recent messages should be preserved (boundary group)
+    let kept_contents: Vec<&str> = result
+        .messages_to_keep
+        .iter()
+        .map(|m: &Message| m.content.as_str())
+        .collect();
+    assert!(
+        kept_contents.iter().any(|c| c.contains(&last_content)),
+        "last message content should be preserved in kept messages"
+    );
+}
+
+/// Circuit breaker stops compaction after MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES consecutive failures.
+#[tokio::test]
+async fn test_auto_compact_circuit_breaker() {
+    let prev = std::env::var("AI_CONTEXT_WINDOW").ok();
+    unsafe { std::env::set_var("AI_CONTEXT_WINDOW", "1000"); }
+    clear_all_test_state();
+
+    let large_content = "token ".repeat(200);
+    let messages: Vec<Message> = (0..4)
+        .map(|i| Message {
+            role: if i % 2 == 0 { MessageRole::User } else { MessageRole::Assistant },
+            content: format!("Message {}: {}", i, large_content),
+            ..Default::default()
+        })
+        .collect();
+
+    let model = "claude-sonnet-4-6";
+
+    // Tracking state at max consecutive failures (circuit breaker tripped)
+    let tracking = ai_agent::AutoCompactTrackingState {
+        compacted: false,
+        turn_counter: 10,
+        turn_id: "test-turn".to_string(),
+        consecutive_failures: 3, // MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+    };
+
+    let result = ai_agent::services::compact::auto_compact::auto_compact_if_needed(
+        &messages, model, None, Some(&tracking), 0,
+    )
+    .await;
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("AI_CONTEXT_WINDOW", v),
+            None => std::env::remove_var("AI_CONTEXT_WINDOW"),
+        }
+    }
+
+    assert!(
+        !result.was_compacted,
+        "circuit breaker should prevent compaction after max consecutive failures"
+    );
+    assert!(
+        result.compaction_result.is_none(),
+        "should have no compaction result when circuit breaker trips"
+    );
+}
+
+/// Compaction reduces total estimated tokens when given a tight budget.
+#[tokio::test]
+async fn test_compact_tokens_reduced() {
+    clear_all_test_state();
+
+    // Build messages totaling ~5000+ estimated tokens
+    let big_chunk = "lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(10);
+    let messages: Vec<Message> = (0..20)
+        .map(|i| Message {
+            role: if i % 2 == 0 { MessageRole::User } else { MessageRole::Assistant },
+            content: format!("Turn {}: {}", i, big_chunk),
+            ..Default::default()
+        })
+        .collect();
+
+    let tokens_before: u64 = messages
+        .iter()
+        .map(|m| (m.content.len() as u64 + 3) / 4 + 4)
+        .sum();
+
+    let options = ai_agent::services::compact::compact::CompactOptions {
+        max_tokens: Some(500),
+        direction: ai_agent::services::compact::compact::CompactDirection::Smart,
+        create_boundary: true,
+        system_prompt: None,
+    };
+    let result = ai_agent::services::compact::compact::compact_messages(&messages, options)
+        .await
+        .expect("compaction should succeed");
+
+    assert!(result.success);
+    assert_eq!(result.tokens_before, tokens_before);
+    assert!(
+        result.tokens_after < result.tokens_before,
+        "tokens after ({}) should be less than before ({})",
+        result.tokens_after,
+        result.tokens_before
+    );
+    // Result should be close to or below the target
+    assert!(
+        result.tokens_after <= 600,
+        "tokens after ({}) should be near target (500)",
+        result.tokens_after
+    );
+}
+
+/// Auto-compact doesn't run for forked agent query sources.
+#[test]
+fn test_auto_compact_query_source_guard() {
+    clear_all_test_state();
+    with_env_var("AI_CONTEXT_WINDOW", "1000", || {
+        let large_content = "word ".repeat(500);
+        let messages: Vec<Message> = (0..6)
+            .map(|i| Message {
+                role: if i % 2 == 0 { MessageRole::User } else { MessageRole::Assistant },
+                content: format!("Turn {}: {}", i, large_content),
+                ..Default::default()
+            })
+            .collect();
+
+        let model = "claude-sonnet-4-6";
+
+        // Normal query source should trigger
+        assert!(
+            ai_agent::should_auto_compact(&messages, model, None, 0),
+            "should trigger without query_source"
+        );
+        assert!(
+            ai_agent::should_auto_compact(&messages, model, Some("main"), 0),
+            "should trigger with normal query_source"
+        );
+
+        // Forked agent query sources should NOT trigger
+        assert!(
+            !ai_agent::should_auto_compact(&messages, model, Some("compact"), 0),
+            "should NOT trigger for 'compact' query_source"
+        );
+        assert!(
+            !ai_agent::should_auto_compact(&messages, model, Some("session_memory"), 0),
+            "should NOT trigger for 'session_memory' query_source"
+        );
+    });
+}
+
+// ============================================================================
 // Session memory tests (no real API needed)
 // ============================================================================
 

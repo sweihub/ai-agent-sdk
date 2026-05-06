@@ -1,6 +1,6 @@
 [package]
 name = "ai-agent"
-version = "0.94.3"
+version = "0.94.4"
 edition = "2024"
 authors = ["Sunding Wei"]
 license = "MIT"
