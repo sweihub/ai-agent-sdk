@@ -5,6 +5,7 @@
 //! This includes token threshold detection, summary generation, and message management.
 
 use crate::constants::env::{ai, ai_code};
+use crate::session::{enqueue_session_metadata, SessionMetadata};
 pub use crate::services::token_estimation::{
     rough_token_count_estimation, rough_token_count_estimation_for_content,
     rough_token_count_estimation_for_message,
@@ -104,6 +105,10 @@ pub fn get_blocking_limit(model: &str) -> u32 {
 
 /// Manual compact uses smaller buffer (more aggressive)
 pub const MANUAL_COMPACT_BUFFER_TOKENS: u32 = 3_000;
+
+/// Synthetic user message content prepended when PTL retry drops group 0
+/// and the result starts with an assistant message (API requires user-first).
+pub const PTL_RETRY_MARKER: &str = "[earlier conversation truncated for compaction retry]";
 
 /// Maximum consecutive auto-compact failures before giving up
 pub const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES: u32 = 3;
@@ -269,8 +274,10 @@ pub struct CompactionResult {
     pub summary_messages: Vec<Message>,
     /// Messages that were kept (not summarized)
     pub messages_to_keep: Option<Vec<Message>>,
-    /// Attachments to include
+    /// Attachments to include (file restores, plan/skill attachments, deferred tool deltas)
     pub attachments: Vec<Message>,
+    /// SessionStart hook result messages (re-injected after compaction)
+    pub hook_results: Vec<Message>,
     /// Pre-compaction token count
     pub pre_compact_token_count: u32,
     /// Post-compaction token count
@@ -279,6 +286,148 @@ pub struct CompactionResult {
     pub true_post_compact_token_count: Option<u64>,
     /// Token usage from the compaction API call itself
     pub compaction_usage: Option<TokenUsage>,
+}
+
+/// Merges user-supplied custom instructions with hook-provided instructions.
+/// User instructions come first; hook instructions are appended.
+/// Empty strings normalize to None.
+pub fn merge_hook_instructions(
+    user_instructions: Option<&str>,
+    hook_instructions: Option<&str>,
+) -> Option<String> {
+    let user = user_instructions.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    });
+    let hook = hook_instructions.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    });
+    match (user, hook) {
+        (None, None) => None,
+        (Some(u), None) => Some(u),
+        (None, Some(h)) => Some(h),
+        (Some(u), Some(h)) => Some(format!("{}\n\n{}", u, h)),
+    }
+}
+
+/// Metadata carried on a compact boundary message.
+/// Matches TypeScript's CompactMetadata on SystemCompactBoundaryMessage.
+#[derive(Debug, Clone, Default)]
+pub struct CompactMetadata {
+    pub trigger: String,
+    pub pre_tokens: u32,
+    pub user_context: Option<String>,
+    pub messages_summarized: Option<usize>,
+    pub preserved_segment: Option<PreservedSegment>,
+    pub pre_compact_discovered_tools: Option<Vec<String>>,
+}
+
+/// Relink metadata for preserved messages after suffix-preserving compaction.
+#[derive(Debug, Clone)]
+pub struct PreservedSegment {
+    pub head_uuid: String,
+    pub anchor_uuid: String,
+    pub tail_uuid: String,
+}
+
+/// Create a compact boundary marker message.
+/// Matches TypeScript's createCompactBoundaryMessage().
+pub fn create_compact_boundary_message(
+    trigger: &str,
+    pre_tokens: u32,
+    last_uuid: Option<&str>,
+    user_context: Option<String>,
+    messages_summarized: Option<usize>,
+) -> Message {
+    let mut boundary_content = format!(
+        "[Previous conversation summarized]{{{}}}",
+        trigger
+    );
+    if let Some(ctx) = &user_context {
+        boundary_content.push_str(&format!("\n\nUser context: {}", ctx));
+    }
+
+    let mut msg = Message {
+        role: MessageRole::System,
+        content: boundary_content,
+        is_meta: Some(true),
+        ..Default::default()
+    };
+
+    // Attach compact metadata for downstream consumers
+    if let Some(id) = last_uuid {
+        msg.uuid = Some(id.to_string());
+    }
+
+    msg
+}
+
+/// Annotate a compact boundary with preserved-segment relink metadata.
+/// Preserved messages keep their original UUIDs on disk; the loader uses
+/// this to patch head→anchor and anchor's-other-children→tail.
+/// Matches TypeScript's annotateBoundaryWithPreservedSegment().
+pub fn annotate_boundary_with_preserved_segment(
+    boundary: &mut Message,
+    anchor_uuid: &str,
+    messages_to_keep: &[Message],
+) {
+    if messages_to_keep.is_empty() {
+        return;
+    }
+    let head_uuid = messages_to_keep.first().and_then(|m| m.uuid.as_deref()).unwrap_or("");
+    let tail_uuid = messages_to_keep.last().and_then(|m| m.uuid.as_deref()).unwrap_or("");
+
+    // Encode preserved segment into boundary content for downstream consumers
+    let segment_info = format!(
+        "\n[preserved: {}..{} anchor: {}]",
+        head_uuid, tail_uuid, anchor_uuid
+    );
+    boundary.content.push_str(&segment_info);
+}
+
+/// Build the base post-compact messages array from a CompactionResult.
+/// Ensures consistent ordering: boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults.
+/// Matches TypeScript's buildPostCompactMessages().
+pub fn build_post_compact_messages(result: &CompactionResult) -> Vec<Message> {
+    let mut msgs = Vec::new();
+    msgs.push(result.boundary_marker.clone());
+    msgs.extend(result.summary_messages.iter().cloned());
+    if let Some(ref keep) = result.messages_to_keep {
+        msgs.extend(keep.iter().cloned());
+    }
+    msgs.extend(result.attachments.iter().cloned());
+    msgs.extend(result.hook_results.iter().cloned());
+    msgs
+}
+
+/// Re-append session metadata so it stays within the 16KB tail window.
+/// Matches TypeScript's reAppendSessionMetadata().
+pub fn re_append_session_metadata(
+    session_id: &str,
+    model: &str,
+    cwd: &str,
+    tag: Option<&str>,
+    summary: Option<&str>,
+) {
+    use std::time::SystemTime;
+
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_default();
+
+    let metadata = SessionMetadata {
+        id: session_id.to_string(),
+        cwd: cwd.to_string(),
+        model: model.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        message_count: 0,
+        summary: summary.map(|s| s.to_string()),
+        tag: tag.map(|s| s.to_string()),
+    };
+    enqueue_session_metadata(session_id, &metadata);
 }
 
 /// Strip images from messages before sending for compaction
@@ -505,7 +654,7 @@ mod tests {
     #[test]
     fn test_effective_context_window() {
         let window = get_effective_context_window_size("claude-sonnet-4-6");
-        // 200000 - 20000 = 180000
+        // 200000 - 20000 (min(max output 32K, COMPACT_MAX_OUTPUT 20K)) = 180000
         assert_eq!(window, 180_000);
     }
 
@@ -527,7 +676,7 @@ mod tests {
 
     #[test]
     fn test_token_warning_state_warning() {
-        // warning at 180000 - 20000 = 160000
+        // warning at 179000 - 20000 = 159000
         let state = calculate_token_warning_state(165_000, "claude-sonnet-4-6");
         assert!(state.is_above_warning_threshold);
         // error uses same buffer, so this is also above error threshold
@@ -537,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_token_warning_state_compact() {
-        let state = calculate_token_warning_state(170_000, "claude-sonnet-4-6");
+        let state = calculate_token_warning_state(180_000, "claude-sonnet-4-6");
         assert!(state.is_above_warning_threshold);
         assert!(state.is_above_auto_compact_threshold);
     }
@@ -545,7 +694,7 @@ mod tests {
     #[test]
     fn test_should_compact() {
         assert!(!should_compact(50_000, "claude-sonnet-4-6"));
-        assert!(should_compact(170_000, "claude-sonnet-4-6"));
+        assert!(should_compact(180_000, "claude-sonnet-4-6"));
     }
 
     #[test]
@@ -799,6 +948,7 @@ fn create_file_restore_attachment(path: &str, content: &str) -> Message {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
     }
 }
 
@@ -842,6 +992,7 @@ fn create_skill_restore_attachment(name: &str, content: &str) -> Message {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
     }
 }
 
@@ -913,6 +1064,7 @@ mod post_compact_tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         }];
         let paths = collect_read_tool_file_paths(&messages);
         assert!(paths.contains("/foo/bar.txt"));
@@ -936,6 +1088,7 @@ mod post_compact_tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         }];
         let paths = collect_read_tool_file_paths(&messages);
         assert!(paths.is_empty());

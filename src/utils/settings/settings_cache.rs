@@ -111,6 +111,7 @@ pub fn reset_settings_cache() {
     cache.session_settings = None;
     cache.per_source_cache.clear();
     cache.parse_file_cache.clear();
+    cache.plugin_settings_base = None;
 }
 
 #[cfg(test)]
@@ -118,6 +119,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn test_session_cache_roundtrip() {
         reset_settings_cache();
         assert!(get_session_settings_cache().is_none());
@@ -134,6 +136,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_per_source_cache() {
         reset_settings_cache();
         let source = SettingSource::UserSettings;
@@ -154,6 +157,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_parse_file_cache() {
         reset_settings_cache();
         assert!(get_cached_parsed_file("/nonexistent").is_none());
@@ -174,6 +178,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_plugin_settings_base() {
         reset_settings_cache();
         assert!(get_plugin_settings_base().is_none());
@@ -186,6 +191,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_reset_clears_all() {
         // Populate all caches
         set_session_settings_cache(SettingsWithErrors {

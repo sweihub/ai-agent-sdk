@@ -210,6 +210,7 @@ pub fn clear_builtin_plugins() {
 mod tests {
     use super::*;
 
+    #[serial_test::serial]
     #[test]
     fn test_register_and_get_builtin_plugin() {
         clear_builtin_plugins();
@@ -241,6 +242,7 @@ mod tests {
         assert!(!is_builtin_plugin_id("my-plugin"));
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_get_builtin_plugins_enabled_disabled() {
         clear_builtin_plugins();
@@ -279,6 +281,7 @@ mod tests {
         clear_builtin_plugins();
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_get_builtin_plugins_filters_unavailable() {
         clear_builtin_plugins();
@@ -315,6 +318,7 @@ mod tests {
         clear_builtin_plugins();
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_clear_builtin_plugins() {
         clear_builtin_plugins();

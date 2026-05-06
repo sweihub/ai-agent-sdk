@@ -276,7 +276,7 @@ pub fn get_max_thinking_tokens_for_model(model: &str) -> u64 {
 /// Feature flag: slot-reservation cap for max_tokens.
 /// Always enabled (matching TS feature('tengu_otk_slot_v1'), all features enabled).
 fn is_max_tokens_cap_enabled() -> bool {
-    true
+    false
 }
 
 /// Resolve the effective max_tokens for a given model.

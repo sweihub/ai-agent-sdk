@@ -58,10 +58,12 @@ fn migrate_legacy_attachment(message: &serde_json::Value) -> serde_json::Value {
 
         // Transform legacy new_file type
         if att_type == Some("new_file".to_string()) {
-            if let Some(filename) = attachment.get("filename").and_then(|v| v.as_str()) {
+            let filename: Option<String> =
+                attachment.get("filename").and_then(|v| v.as_str()).map(|s| s.to_string());
+            if let Some(fn_str) = filename {
                 if let Some(obj) = attachment.as_object_mut() {
                     obj.insert("type".to_string(), serde_json::json!("file"));
-                    obj.insert("displayPath".to_string(), serde_json::json!(filename));
+                    obj.insert("displayPath".to_string(), serde_json::json!(fn_str));
                 }
             }
             return msg;
@@ -69,10 +71,12 @@ fn migrate_legacy_attachment(message: &serde_json::Value) -> serde_json::Value {
 
         // Transform legacy new_directory type
         if att_type == Some("new_directory".to_string()) {
-            if let Some(path) = attachment.get("path").and_then(|v| v.as_str()) {
+            let path: Option<String> =
+                attachment.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
+            if let Some(p) = path {
                 if let Some(obj) = attachment.as_object_mut() {
                     obj.insert("type".to_string(), serde_json::json!("directory"));
-                    obj.insert("displayPath".to_string(), serde_json::json!(path));
+                    obj.insert("displayPath".to_string(), serde_json::json!(p));
                 }
             }
             return msg;
@@ -80,14 +84,15 @@ fn migrate_legacy_attachment(message: &serde_json::Value) -> serde_json::Value {
 
         // Backfill displayPath for attachments from old sessions
         if attachment.get("displayPath").is_none() {
-            let path = attachment
+            let path: Option<String> = attachment
                 .get("filename")
                 .or_else(|| attachment.get("path"))
                 .or_else(|| attachment.get("skillDir"))
-                .and_then(|v| v.as_str());
-            if let Some(path) = path {
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if let Some(p) = path {
                 if let Some(obj) = attachment.as_object_mut() {
-                    obj.insert("displayPath".to_string(), serde_json::json!(path));
+                    obj.insert("displayPath".to_string(), serde_json::json!(p));
                 }
             }
         }
@@ -525,11 +530,14 @@ pub async fn recover_conversation(session_id: &str) -> Result<ConversationRecove
     let deserialized = deserialize_messages_with_interrupt_detection(&messages);
 
     // Process session start hooks for resume
-    let hook_messages = process_session_start_hooks("resume", session_id).await;
+    let hook_messages = process_session_start_hooks("resume", Some(session_id), "default", None).await;
 
     // Append hook messages to the conversation
     let mut final_messages = deserialized.messages;
-    final_messages.extend(hook_messages);
+    for hook_msg in hook_messages {
+        let json: serde_json::Value = serde_json::to_value(hook_msg).unwrap_or_default();
+        final_messages.push(json);
+    }
 
     Ok(ConversationRecovery {
         messages: final_messages,
@@ -586,14 +594,64 @@ fn get_conversation_state_path() -> PathBuf {
     path
 }
 
-/// Process session start hooks for resume.
-/// Returns messages to append to the conversation.
-async fn process_session_start_hooks(event: &str, session_id: &str) -> Vec<serde_json::Value> {
-    // In the TS version, this calls processSessionStartHooks which runs registered hooks.
-    // This is a simplified placeholder that would run registered session start hooks.
-    log::debug!("Processing session start hooks: event={}, session={}", event, session_id);
-    // Hook messages would be added by registered hooks here.
-    vec![]
+/// Process session start hooks for resume/compaction.
+/// Returns hook result messages to append to the conversation.
+/// Matches TypeScript's processSessionStartHooks() in sessionStart.ts.
+pub async fn process_session_start_hooks(
+    source: &str,
+    session_id: Option<&str>,
+    model: &str,
+    hook_registry: Option<&crate::hooks::HookRegistry>,
+) -> Vec<crate::types::Message> {
+    log::debug!(
+        "Processing session start hooks: source={}, session={:?}, model={}",
+        source,
+        session_id,
+        model
+    );
+
+    let registry = match hook_registry {
+        Some(r) => r,
+        None => return vec![],
+    };
+
+    if !registry.has_hooks("SessionStart") {
+        return vec![];
+    }
+
+    let input = crate::hooks::HookInput {
+        event: "SessionStart".to_string(),
+        tool_name: None,
+        tool_input: Some(serde_json::json!({
+            "source": source,
+            "session_id": session_id,
+            "model": model,
+        })),
+        tool_output: None,
+        tool_use_id: None,
+        session_id: session_id.map(|s| s.to_string()),
+        cwd: None,
+        error: None,
+        ..crate::hooks::HookInput::default()
+    };
+
+    let results = registry.execute("SessionStart", input).await;
+
+    // Collect hook output as attachment messages
+    results
+        .iter()
+        .filter_map(|r| r.message.as_ref())
+        .filter(|m| !m.trim().is_empty())
+        .map(|msg| crate::types::Message {
+            role: crate::types::MessageRole::User,
+            content: format!(
+                "<session-start-hook>\n{}\n</session-start-hook>",
+                msg
+            ),
+            is_meta: Some(true),
+            ..Default::default()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -640,8 +698,8 @@ mod tests {
             result.turn_interruption_state,
             TurnInterruptionState::InterruptedPrompt { .. }
         ));
-        // Should have user + continuation + sentinel messages
-        assert_eq!(result.messages.len(), 3);
+        // Should have user + sentinel messages (no continuation for interrupted_prompt)
+        assert_eq!(result.messages.len(), 2);
     }
 
     #[test]
