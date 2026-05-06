@@ -93,6 +93,12 @@ impl FileReadTool {
             return Err(crate::error::AgentError::Tool(e.to_string()));
         }
 
+        // Track this file read for post-compact restore
+        crate::bootstrap::state::record_file_read(
+            final_path.to_string_lossy().to_string(),
+            content.clone(),
+        );
+
         Ok(ToolResult {
             result_type: "text".to_string(),
             tool_use_id: "".to_string(),

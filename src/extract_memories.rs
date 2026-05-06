@@ -767,6 +767,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         };
         let assistant_msg = Message {
             role: MessageRole::Assistant,
@@ -779,6 +780,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         };
         let tool_msg = Message {
             role: MessageRole::Tool,
@@ -791,6 +793,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         };
 
         assert!(is_model_visible_message(&user_msg));
@@ -812,6 +815,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
             },
             Message {
                 role: MessageRole::Assistant,
@@ -824,6 +828,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
             },
             Message {
                 role: MessageRole::User,
@@ -836,6 +841,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
             },
         ];
 
@@ -859,6 +865,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         }];
 
         assert!(!should_extract_memories(&few_messages, &config));
@@ -884,6 +891,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
             })
             .collect();
 

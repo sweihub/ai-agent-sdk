@@ -282,6 +282,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_reset_context_collapse() {
         // Should not panic
         reset_context_collapse();
@@ -300,6 +301,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_get_last_cleanup_summary_empty() {
         // Reset global state to isolate from parallel tests
         reset_cleanup_state_for_testing();
@@ -311,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_get_last_cleanup_summary_populated() {
         reset_cleanup_state_for_testing();
         run_post_compact_cleanup(Some("repl_main_thread"));

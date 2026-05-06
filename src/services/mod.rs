@@ -80,11 +80,12 @@ pub use token_estimation::{
     count_tokens_with_api, count_tokens_with_fallback, estimate_conversation, estimate_tokens,
     estimate_tokens_characters, estimate_tokens_words, estimate_tool_definitions,
     get_default_file_read_max_tokens, fits_in_context, rough_token_count_estimation,
-    rough_token_count_estimation_for_content, rough_token_count_estimation_for_file_type,
+    rough_token_count_estimation_for_block, rough_token_count_estimation_for_content,
+    rough_token_count_estimation_for_content_array, rough_token_count_estimation_for_file_type,
     rough_token_count_estimation_for_message, rough_token_count_estimation_for_messages,
     calculate_padding, EstimationMethod, TokenEstimate, MaxFileReadTokenExceededError,
     TOKEN_COUNT_MAX_TOKENS, TOKEN_COUNT_THINKING_BUDGET, DEFAULT_FILE_READ_MAX_TOKENS,
-    validate_content_tokens,
+    TOOL_TOKEN_COUNT_OVERHEAD, validate_content_tokens,
 };
 
 pub use streaming::{

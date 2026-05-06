@@ -337,6 +337,169 @@ fn has_thinking_blocks(messages: &[serde_json::Value]) -> bool {
     false
 }
 
+/// Strip tool search-specific fields from messages before sending for token counting.
+/// Removes 'caller' from tool_use blocks and 'tool_reference' from tool_result content.
+/// These fields are only valid with the tool search beta and will cause errors otherwise.
+///
+/// Matches TypeScript: stripToolSearchFieldsFromMessages()
+fn strip_tool_search_fields_from_messages(
+    messages: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|message| {
+            let content = message.get("content");
+            let Some(content_array) = content.and_then(|c| c.as_array()) else {
+                return message.clone();
+            };
+
+            let normalized_content: Vec<serde_json::Value> = content_array
+                .iter()
+                .map(|block| {
+                    let block_type = block.get("type").and_then(|t| t.as_str());
+
+                    // Strip 'caller' from tool_use blocks (assistant messages)
+                    if block_type == Some("tool_use") {
+                        let id = block.get("id").cloned();
+                        let name = block.get("name").cloned();
+                        let input = block.get("input").cloned();
+                        return serde_json::json!({
+                            "type": "tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": input,
+                        });
+                    }
+
+                    // Strip tool_reference blocks from tool_result content (user messages)
+                    if block_type == Some("tool_result") {
+                        let tool_use_id = block.get("tool_use_id").cloned();
+                        let result_content = block.get("content");
+
+                        if let Some(result_content_array) = result_content.and_then(|c| c.as_array())
+                        {
+                            let filtered: Vec<serde_json::Value> = result_content_array
+                                .iter()
+                                .filter(|c| {
+                                    !(c.get("type")
+                                        .and_then(|t| t.as_str())
+                                        .is_some()
+                                        && c.get("type")
+                                            .and_then(|t| t.as_str())
+                                            == Some("tool_reference"))
+                                })
+                                .cloned()
+                                .collect();
+
+                            if filtered.is_empty() {
+                                return serde_json::json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use_id,
+                                    "content": [{ "type": "text", "text": "[tool references]" }]
+                                });
+                            }
+                            if filtered.len() != result_content_array.len() {
+                                return serde_json::json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use_id,
+                                    "content": filtered
+                                });
+                            }
+                        }
+                    }
+
+                    block.clone()
+                })
+                .collect();
+
+            let mut msg = message.clone();
+            msg["content"] = serde_json::json!(normalized_content);
+            msg
+        })
+        .collect()
+}
+
+/// Estimate tokens for a single content block.
+///
+/// Matches TypeScript: roughTokenCountEstimationForBlock()
+/// Handles text, image, document, tool_result, tool_use, thinking, redacted_thinking blocks.
+///
+/// # Returns
+/// Estimated token count for this block.
+pub fn rough_token_count_estimation_for_block(block: &serde_json::Value) -> usize {
+    let block_type = block.get("type").and_then(|t| t.as_str());
+
+    match block_type {
+        Some("text") => {
+            let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+            rough_token_count_estimation(text, 4.0)
+        }
+        Some("image") | Some("document") => {
+            // Images are resized to max 2000x2000 (5333 tokens).
+            // Use conservative estimate matching microCompact's IMAGE_MAX_TOKEN_SIZE.
+            // Documents (base64 PDF) also capped at 2000 API tokens.
+            2000
+        }
+        Some("tool_result") => {
+            // Recursively estimate tool_result content array
+            if let Some(content) = block.get("content") {
+                rough_token_count_estimation_for_content_array(content)
+            } else {
+                0
+            }
+        }
+        Some("tool_use") => {
+            // input is the JSON the model generated — arbitrarily large
+            let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let input_str = serde_json::to_string(&block.get("input").unwrap_or(&serde_json::json!({})))
+                .unwrap_or_default();
+            rough_token_count_estimation(&(name.to_string() + &input_str), 4.0)
+        }
+        Some("thinking") => {
+            let text = block.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
+            rough_token_count_estimation(text, 4.0)
+        }
+        Some("redacted_thinking") => {
+            let text = block.get("data").and_then(|t| t.as_str()).unwrap_or("");
+            rough_token_count_estimation(text, 4.0)
+        }
+        // server_tool_use, web_search_tool_result, mcp_tool_use, etc. —
+        // text-like payloads, stringify to estimate.
+        _ => {
+            let serialized = serde_json::to_string(block).unwrap_or_default();
+            rough_token_count_estimation(&serialized, 4.0)
+        }
+    }
+}
+
+/// Estimate tokens for a content array (handles both string and array content).
+///
+/// Matches TypeScript: roughTokenCountEstimationForContent()
+///
+/// # Arguments
+/// * `content` - Either a JSON string value or an array of content blocks
+///
+/// # Returns
+/// Estimated total token count for all blocks.
+pub fn rough_token_count_estimation_for_content_array(content: &serde_json::Value) -> usize {
+    if let Some(text) = content.as_str() {
+        return rough_token_count_estimation(text, 4.0);
+    }
+    let Some(blocks) = content.as_array() else {
+        return 0;
+    };
+    blocks.iter().map(|b| rough_token_count_estimation_for_block(b)).sum()
+}
+
+/// Fixed token overhead added by the API when tools are present.
+/// The API adds a tool prompt preamble (~500 tokens) once per API call when tools are present.
+/// When we count tools individually via the token counting API, each call includes this overhead,
+/// leading to N × overhead instead of 1 × overhead for N tools.
+/// We subtract this overhead from per-tool counts to show accurate tool content sizes.
+///
+/// Matches TypeScript: TOOL_TOKEN_COUNT_OVERHEAD
+pub const TOOL_TOKEN_COUNT_OVERHEAD: u64 = 500;
+
 /// Get the base API URL from environment, defaulting to Anthropic API
 fn get_base_url() -> String {
     std::env::var("AI_CODE_API_URL")
@@ -361,10 +524,74 @@ fn is_using_vertex() -> bool {
     is_truthy(std::env::var("AI_CODE_USE_VERTEX").ok())
 }
 
-/// Normalize model string for API (strip display wrappers)
+/// Check if using Bedrock provider
+fn is_using_bedrock() -> bool {
+    let is_truthy = |v: Option<String>| {
+        v.map(|x| x == "1" || x.to_lowercase() == "true")
+            .unwrap_or(false)
+    };
+    is_truthy(std::env::var("AI_CODE_USE_BEDROCK").ok())
+}
+
+/// Check if Vertex is using a global region endpoint (Haiku not available there)
+fn is_vertex_global_endpoint() -> bool {
+    is_using_vertex() && get_vertex_region_for_model() == "global"
+}
+
+/// Get the Vertex region for the small/fast model
+fn get_vertex_region_for_model() -> String {
+    std::env::var("AI_CODE_VERTEX_REGION")
+        .or_else(|_| std::env::var("AI_VERTEX_REGION"))
+        .unwrap_or_else(|_| "us-east5".to_string())
+}
+
+/// Get model-specific beta features as a list of strings.
+///
+/// Matches TypeScript: getModelBetas(model) → getAllModelBetas(model)
+/// Returns the betas that should be sent in the request for a given model.
+/// Non-Haiku models get the claude-code beta header.
+/// Models with 1M+ context get the context-1m beta header.
+/// Filters out Bedrock-incompatible betas when on Bedrock provider.
+fn get_model_betas(model: &str) -> Vec<String> {
+    let mut betas = Vec::new();
+    let is_haiku = model.to_lowercase().contains("haiku");
+
+    // Non-Haiku models get the core Claude Code beta header
+    if !is_haiku {
+        betas.push(crate::constants::betas::CLAUDE_CODE_20250219_BETA_HEADER.to_string());
+    }
+
+    // Models with 1M+ context get the context management beta
+    if model.contains("1m") || model.contains("[1m]") {
+        betas.push(crate::constants::betas::CONTEXT_1M_BETA_HEADER.to_string());
+    }
+
+    // Filter for Bedrock - some betas don't work as headers on Bedrock
+    if is_using_bedrock() {
+        let bedrock_extra_only =
+            crate::constants::betas::get_bedrock_extra_params_headers();
+        betas.retain(|b| !bedrock_extra_only.contains(b.as_str()));
+    }
+
+    betas
+}
+
+/// Get extra body parameters from AI_CODE_EXTRA_BODY environment variable.
+///
+/// Matches TypeScript: getExtraBodyParams()
+/// Parses a JSON object from the environment and returns it for spreading into API requests.
+fn get_extra_body_params() -> Option<serde_json::Value> {
+    let extra_str = std::env::var("AI_CODE_EXTRA_BODY").ok()?;
+    serde_json::from_str(&extra_str).ok()
+}
+
+/// Normalize model string for API (strip display wrappers and context window indicators).
+/// Matches TypeScript: normalizeModelStringForAPI() which strips `[1m]`/`[2m]` suffixes.
 fn normalize_model_string_for_api(model: &str) -> String {
-    // Strip common display wrappers like "claude/" prefix if present
-    model.trim_start_matches("claude/").to_string()
+    let s = model.trim_start_matches("claude/");
+    regex::Regex::new(r"\[(1|2)m\]")
+        .map(|re| re.replace_all(s, "").to_string())
+        .unwrap_or_else(|_| s.to_string())
 }
 
 /// Count tokens via the Anthropic `/v1/messages/count_tokens` API.
@@ -535,22 +762,31 @@ pub async fn count_tokens_via_haiku_fallback(
     let contains_thinking = has_thinking_blocks(messages);
 
     // Use Haiku for token counting by default (faster / cheaper).
-    // Use Sonnet if messages contain thinking blocks and on Vertex/Bedrock.
-    let model = if contains_thinking && is_using_vertex() {
+    // Use Sonnet when:
+    // - Vertex global endpoint (Haiku not available there)
+    // - Bedrock with thinking blocks (Haiku 3.5 doesn't support thinking on Bedrock)
+    // - Vertex with thinking blocks (Haiku 3.5 doesn't support thinking on Vertex)
+    // Note: Haiku 4.5 supports thinking blocks on Anthropic API directly.
+    let model = if is_vertex_global_endpoint()
+        || (is_using_bedrock() && contains_thinking)
+        || (is_using_vertex() && contains_thinking)
+    {
         crate::utils::model::get_default_sonnet_model()
     } else {
         crate::utils::model::get_small_fast_model()
     };
 
-    let messages_to_send: Vec<serde_json::Value> = if messages.is_empty() {
+    // Strip tool search-specific fields (caller, tool_reference) before sending
+    // These fields are only valid with the tool search beta header
+    let normalized_messages = if messages.is_empty() {
         vec![serde_json::json!({ "role": "user", "content": "count" })]
     } else {
-        messages.to_vec()
+        strip_tool_search_fields_from_messages(messages)
     };
     let mut body = serde_json::json!({
         "model": normalize_model_string_for_api(&model),
         "max_tokens": if contains_thinking { TOKEN_COUNT_MAX_TOKENS } else { 1 },
-        "messages": messages_to_send
+        "messages": normalized_messages
     });
 
     // Add tools if provided
@@ -566,6 +802,25 @@ pub async fn count_tokens_via_haiku_fallback(
             "type": "enabled",
             "budget_tokens": TOKEN_COUNT_THINKING_BUDGET
         });
+    }
+
+    // Add model-specific betas (filter for Vertex if needed)
+    let mut betas = get_model_betas(&model);
+    if is_using_vertex() && !betas.is_empty() {
+        let allowed = crate::constants::betas::get_vertex_count_tokens_allowed_betas();
+        betas.retain(|b| allowed.contains(b.as_str()));
+    }
+    if !betas.is_empty() {
+        body["betas"] = serde_json::json!(betas);
+    }
+
+    // Add extra body parameters from AI_CODE_EXTRA_BODY env var
+    if let Some(extra) = get_extra_body_params() {
+        if let Some(extra_obj) = extra.as_object() {
+            for (k, v) in extra_obj {
+                body[k] = v.clone();
+            }
+        }
     }
 
     let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
@@ -638,7 +893,8 @@ pub async fn count_tokens_with_fallback(
     tools: Option<&[serde_json::Value]>,
 ) -> Option<u64> {
     // Try primary count_tokens API first
-    if let Some(count) = count_messages_tokens_with_api(api_key.clone(), base_url.clone(), model, messages, tools, None).await {
+    let betas = get_model_betas(model);
+    if let Some(count) = count_messages_tokens_with_api(api_key.clone(), base_url.clone(), model, messages, tools, Some(&betas)).await {
         return Some(count);
     }
     log::debug!(
@@ -954,10 +1210,21 @@ mod tests {
 
     #[test]
     fn test_normalize_model_string_for_api() {
+        // Strip claude/ prefix
         assert_eq!(normalize_model_string_for_api("claude/sonnet-4-6"), "sonnet-4-6");
+        // Pass through model without prefix
         assert_eq!(
             normalize_model_string_for_api("claude-sonnet-4-6"),
             "claude-sonnet-4-6"
+        );
+        // Strip context window indicators
+        assert_eq!(
+            normalize_model_string_for_api("claude-sonnet-4-6[1m]"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            normalize_model_string_for_api("claude-opus-4-7[2m]"),
+            "claude-opus-4-7"
         );
     }
 
@@ -999,5 +1266,198 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
+    }
+
+    // ============================================================================
+    // Tests for tool search field stripping
+    // ============================================================================
+
+    #[test]
+    fn test_strip_tool_search_fields_removes_caller_from_tool_use() {
+        let messages = vec![serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tool_1",
+                    "name": "Read",
+                    "input": { "file_path": "/test.txt" },
+                    "caller": "some_agent"
+                }
+            ]
+        })];
+        let result = strip_tool_search_fields_from_messages(&messages);
+        let tool_use = &result[0]["content"][0];
+        assert_eq!(tool_use.get("caller"), None);
+        assert_eq!(tool_use["type"], "tool_use");
+        assert_eq!(tool_use["id"], "tool_1");
+        assert_eq!(tool_use["name"], "Read");
+    }
+
+    #[test]
+    fn test_strip_tool_search_fields_removes_tool_reference() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool_1",
+                    "content": [
+                        { "type": "tool_reference", "tool_use_id": "tool_1" },
+                        { "type": "text", "text": "real result" }
+                    ]
+                }
+            ]
+        })];
+        let result = strip_tool_search_fields_from_messages(&messages);
+        let content = &result[0]["content"][0]["content"];
+        assert_eq!(content.as_array().unwrap().len(), 1);
+        assert_eq!(content[0]["type"], "text");
+    }
+
+    #[test]
+    fn test_strip_tool_search_fields_all_references_replaced() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool_1",
+                    "content": [
+                        { "type": "tool_reference", "tool_use_id": "tool_1" }
+                    ]
+                }
+            ]
+        })];
+        let result = strip_tool_search_fields_from_messages(&messages);
+        let content = &result[0]["content"][0]["content"];
+        assert_eq!(content.as_array().unwrap().len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "[tool references]");
+    }
+
+    #[test]
+    fn test_strip_tool_search_fields_passthrough() {
+        let messages = vec![
+            serde_json::json!({ "role": "user", "content": "Hello" }),
+            serde_json::json!({ "role": "assistant", "content": [{ "type": "text", "text": "Hi" }] }),
+        ];
+        let result = strip_tool_search_fields_from_messages(&messages);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["content"], "Hello");
+    }
+
+    // ============================================================================
+    // Tests for content block estimation
+    // ============================================================================
+
+    #[test]
+    fn test_rough_token_count_estimation_for_block_text() {
+        let block = serde_json::json!({ "type": "text", "text": "Hello world" });
+        assert_eq!(rough_token_count_estimation_for_block(&block), 3);
+    }
+
+    #[test]
+    fn test_rough_token_count_estimation_for_block_image() {
+        let block = serde_json::json!({ "type": "image", "source": {} });
+        assert_eq!(rough_token_count_estimation_for_block(&block), 2000);
+    }
+
+    #[test]
+    fn test_rough_token_count_estimation_for_block_document() {
+        let block = serde_json::json!({ "type": "document", "source": {} });
+        assert_eq!(rough_token_count_estimation_for_block(&block), 2000);
+    }
+
+    #[test]
+    fn test_rough_token_count_estimation_for_block_tool_use() {
+        let block = serde_json::json!({
+            "type": "tool_use",
+            "name": "Read",
+            "input": { "file_path": "/test.txt" }
+        });
+        let tokens = rough_token_count_estimation_for_block(&block);
+        // "Read" + '{"file_path":"/test.txt"}' = ~30 chars / 4 = ~8 tokens
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_rough_token_count_estimation_for_block_thinking() {
+        let block = serde_json::json!({
+            "type": "thinking",
+            "thinking": "Let me think about this carefully"
+        });
+        let tokens = rough_token_count_estimation_for_block(&block);
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_rough_token_count_estimation_for_block_redacted_thinking() {
+        let block = serde_json::json!({
+            "type": "redacted_thinking",
+            "data": "xxx"
+        });
+        assert_eq!(rough_token_count_estimation_for_block(&block), 1);
+    }
+
+    #[test]
+    fn test_rough_token_count_estimation_for_block_fallback() {
+        let block = serde_json::json!({
+            "type": "server_tool_use",
+            "name": "magic",
+            "input": {}
+        });
+        let tokens = rough_token_count_estimation_for_block(&block);
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_rough_token_count_estimation_for_content_array_string() {
+        let content = serde_json::json!("Hello world");
+        assert_eq!(rough_token_count_estimation_for_content_array(&content), 3);
+    }
+
+    #[test]
+    fn test_rough_token_count_estimation_for_content_array_blocks() {
+        let content = serde_json::json!([
+            { "type": "text", "text": "Hello" },
+            { "type": "text", "text": " world" }
+        ]);
+        let tokens = rough_token_count_estimation_for_content_array(&content);
+        // "Hello" = 5/4 = 1, " world" = 6/4 = 2 → 3
+        assert_eq!(tokens, 3);
+    }
+
+    // ============================================================================
+    // Tests for get_model_betas
+    // ============================================================================
+
+    #[test]
+    fn test_get_model_betas_non_haiku() {
+        let betas = get_model_betas("claude-sonnet-4-6");
+        assert!(betas.contains(&crate::constants::betas::CLAUDE_CODE_20250219_BETA_HEADER.to_string()));
+    }
+
+    #[test]
+    fn test_get_model_betas_haiku_no_code_beta() {
+        let betas = get_model_betas("claude-haiku-4-5");
+        assert!(!betas.contains(&crate::constants::betas::CLAUDE_CODE_20250219_BETA_HEADER.to_string()));
+    }
+
+    #[test]
+    fn test_get_model_betas_context_1m() {
+        let betas = get_model_betas("claude-sonnet-4-6[1m]");
+        assert!(betas.contains(&crate::constants::betas::CONTEXT_1M_BETA_HEADER.to_string()));
+    }
+
+    // ============================================================================
+    // Tests for get_extra_body_params
+    // ============================================================================
+
+    #[test]
+    fn test_get_extra_body_params_not_set() {
+        // AI_CODE_EXTRA_BODY not set → returns None
+        let result = get_extra_body_params();
+        assert!(result.is_none());
     }
 }

@@ -209,6 +209,7 @@ fn create_user_message(content: &str) -> Message {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
     }
 }
 
@@ -394,6 +395,7 @@ mod tests {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
         };
         let json = message_to_json(&msg);
         assert_eq!(json["role"], "user");
@@ -413,6 +415,7 @@ mod tests {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
         };
         let json = message_to_json(&msg);
         assert_eq!(json["role"], "assistant");
@@ -432,6 +435,7 @@ mod tests {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
         };
         let json = message_to_json_user(&msg);
         assert_eq!(json["role"], "user");

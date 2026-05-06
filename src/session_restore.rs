@@ -761,6 +761,7 @@ fn create_system_message(content: &str) -> Message {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
     }
 }
 

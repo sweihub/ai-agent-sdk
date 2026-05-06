@@ -8,7 +8,7 @@
 //! MCP server connects.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::Arc;
 
 /// Function type for creating a skill command from loaded skill data.
 pub type CreateSkillCommandFn = dyn Fn(&LoadedSkillCommandParams) -> crate::skills::bundled_skills::BundledSkillDefinition
@@ -98,11 +98,7 @@ pub struct MCPSkillBuilders {
 
 /// Singleton state: None until registered.
 /// Uses a Mutex-wrapped Option so we can clear it for tests.
-static BUILDERS: std::sync::Mutex<Option<MCPSkillBuilders>> = std::sync::Mutex::new(None);
-
-/// Immutable cache of the builders. Once set via take_builders_ref(), it serves
-/// &'static references safely.
-static BUILDERS_REF: OnceLock<MCPSkillBuilders> = OnceLock::new();
+static BUILDERS: std::sync::Mutex<Option<Arc<MCPSkillBuilders>>> = std::sync::Mutex::new(None);
 
 /// Whether the builders have been registered.
 static BUILDERS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -123,22 +119,11 @@ pub fn register_mcp_skill_builders(
         return;
     }
 
-    *builders = Some(MCPSkillBuilders {
+    *builders = Some(Arc::new(MCPSkillBuilders {
         create_skill_command,
         parse_skill_frontmatter_fields,
-    });
+    }));
     BUILDERS_REGISTERED.store(true, Ordering::SeqCst);
-
-    // Seed the OnceLock so get_mcp_skill_builders() can return &'static
-    take_builders_ref();
-}
-
-/// Take the builders from the Mutex into the OnceLock.
-/// This bridges the write-once Mutex into an immutable OnceLock that
-/// can safely serve &'static references.
-fn take_builders_ref() {
-    let b = BUILDERS.lock().unwrap().take().expect("builders should be Some");
-    let _ = BUILDERS_REF.set(b);
 }
 
 /// Get the registered MCP skill builders.
@@ -146,13 +131,13 @@ fn take_builders_ref() {
 /// # Panics
 /// Panics if the builders have not been registered yet (i.e., skill loader
 /// has not been evaluated).
-pub fn get_mcp_skill_builders() -> &'static MCPSkillBuilders {
+pub fn get_mcp_skill_builders() -> Arc<MCPSkillBuilders> {
     if !BUILDERS_REGISTERED.load(Ordering::SeqCst) {
         panic!(
             "MCP skill builders not registered — skill loader has not been initialized yet"
         );
     }
-    BUILDERS_REF.get().expect("builders ref should be set after registration")
+    BUILDERS.lock().unwrap().as_ref().cloned().expect("builders should be Some")
 }
 
 /// Check if MCP skill builders have been registered.
@@ -163,8 +148,6 @@ pub fn are_mcp_skill_builders_registered() -> bool {
 /// Clear the MCP skill builders registry (for testing).
 pub fn clear_mcp_skill_builders() {
     *BUILDERS.lock().unwrap() = None;
-    // Note: OnceLock cannot be cleared. After clearing, re-registration
-    // will use the new OnceLock path. The atomic flag guards correctness.
     BUILDERS_REGISTERED.store(false, Ordering::SeqCst);
 }
 
@@ -305,6 +288,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn test_clear_and_register() {
         clear_mcp_skill_builders();
         assert!(!are_mcp_skill_builders_registered());
@@ -322,6 +306,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_register_once() {
         clear_mcp_skill_builders();
 
@@ -346,6 +331,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_panic_on_unregistered() {
         clear_mcp_skill_builders();
 

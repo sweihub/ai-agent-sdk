@@ -310,6 +310,14 @@ impl SkillTool {
                 });
             }
 
+            // Track skill invocation for post-compact restore
+            crate::bootstrap::state::add_invoked_skill(
+                skill_name.to_string(),
+                skill.base_dir.clone(),
+                substituted_content.clone(),
+                None,
+            );
+
             return Ok(ToolResult {
                 result_type: "text".to_string(),
                 tool_use_id: "skill".to_string(),
@@ -448,6 +456,7 @@ mod tests {
         assert!(schema.properties.get("mode").is_some());
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_skill_tool_unknown_skill() {
         clear_all_test_state();
@@ -463,6 +472,7 @@ mod tests {
         assert!(content.contains("Available skills"));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_skill_tool_prefix_matching() {
         clear_all_test_state();
@@ -594,6 +604,7 @@ mod tests {
         assert_eq!(result, "File: test.txt. Again: test.txt.");
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_skill_tool_execute_with_args() {
         clear_all_test_state();
@@ -642,6 +653,7 @@ mod tests {
         assert!(!content.contains("{{{method}}}"), "Placeholder should be substituted: {}", content);
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_skill_tool_execute_with_partial_args() {
         clear_all_test_state();

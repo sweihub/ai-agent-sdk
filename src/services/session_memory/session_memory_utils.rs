@@ -209,6 +209,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_update_threshold() {
         reset_session_memory_state();
         record_extraction_token_count(10_000);
@@ -217,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_extraction_tracking() {
         reset_session_memory_state();
         assert!(get_last_summarized_message_id().is_none());

@@ -251,6 +251,7 @@ pub async fn auto_compact_if_needed(
                     is_api_error_message: None,
                     error_details: None,
                     uuid: None,
+                    timestamp: None,
                 };
                 let summary_messages = if !compact_result.summary.is_empty() {
                     vec![crate::types::Message {
@@ -264,6 +265,7 @@ pub async fn auto_compact_if_needed(
                         is_api_error_message: None,
                         error_details: None,
                         uuid: None,
+                        timestamp: None,
                     }]
                 } else {
                     vec![]
@@ -275,6 +277,7 @@ pub async fn auto_compact_if_needed(
                         summary_messages,
                         messages_to_keep: Some(compact_result.messages_to_keep),
                         attachments: vec![],
+                        hook_results: vec![],
                         pre_compact_token_count: compact_result.tokens_before as u32,
                         post_compact_token_count: compact_result.tokens_after as u32,
                         true_post_compact_token_count: None,

@@ -135,6 +135,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_increment_collapsed_spans() {
         increment_collapsed_spans();
         let stats = get_stats();

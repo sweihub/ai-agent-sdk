@@ -324,6 +324,7 @@ fn sdk_message_from_json(msg: &serde_json::Value) -> crate::types::Message {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
     }
 }
 
@@ -375,6 +376,7 @@ mod tests {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
             },
             crate::types::Message {
                 role: crate::types::MessageRole::Assistant,
@@ -392,6 +394,7 @@ mod tests {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
             },
         ];
         let forked = build_forked_messages_from_sdk(&parent_msgs, "research the codebase");
@@ -416,6 +419,7 @@ mod tests {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
         }];
         let forked = build_forked_messages_from_sdk(&parent_msgs, "do work");
         // Should have: user (parent) + fork user message
@@ -491,6 +495,7 @@ mod tests {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
             },
             crate::types::Message {
                 role: crate::types::MessageRole::Assistant,
@@ -516,6 +521,7 @@ mod tests {
         is_api_error_message: None,
         error_details: None,
         uuid: None,
+        timestamp: None,
             },
         ];
         let forked = build_forked_messages_from_sdk(&parent_msgs, "directive");

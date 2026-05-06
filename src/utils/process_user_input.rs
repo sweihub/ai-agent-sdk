@@ -583,7 +583,8 @@ fn process_text_prompt(
         error_details: None,
         is_error: None,
         is_meta: None,
-            uuid: None,
+        uuid: None,
+        timestamp: Some(chrono::Utc::now().timestamp_millis() as u64),
     };
 
     Ok(ProcessUserInputBaseResult {
@@ -704,6 +705,7 @@ fn make_user_message(content: String, is_meta: Option<bool>) -> Message {
         is_meta,
         is_api_error_message: None,
         error_details: None,
+        timestamp: Some(chrono::Utc::now().timestamp_millis() as u64),
     }
 }
 
@@ -720,6 +722,7 @@ fn make_system_message(content: String) -> Message {
         is_meta: None,
         is_api_error_message: None,
         error_details: None,
+        timestamp: Some(chrono::Utc::now().timestamp_millis() as u64),
     }
 }
 
@@ -736,6 +739,7 @@ fn make_synthetic_caveat() -> Message {
         is_meta: Some(true),
         is_api_error_message: None,
         error_details: None,
+        timestamp: Some(chrono::Utc::now().timestamp_millis() as u64),
     }
 }
 

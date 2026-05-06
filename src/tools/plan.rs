@@ -261,6 +261,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_enter_plan_mode_sets_flag() {
         let tool = EnterPlanModeTool::new();
         let input = serde_json::json!({});
@@ -271,6 +272,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_exit_plan_mode_clears_flag() {
         set_plan_mode(true);
         let tool = ExitPlanModeTool::new();
@@ -282,6 +284,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_exit_plan_mode_not_in_mode() {
         set_plan_mode(false);
         let tool = ExitPlanModeTool::new();
@@ -294,6 +297,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_enter_plan_mode_with_permissions() {
         let tool = EnterPlanModeTool::new();
         let input = serde_json::json!({

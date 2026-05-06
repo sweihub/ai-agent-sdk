@@ -352,6 +352,7 @@ pub use session_title::{clean_title_for_filename, generate_session_title};
 pub use session_url::{build_session_url, extract_session_id, is_valid_session_url};
 
 // New modules from TypeScript translation (April 2026)
+pub mod conversation_recovery;
 pub mod exec_file_no_throw;
 pub mod platform;
 pub mod set;

@@ -19,7 +19,7 @@ mod first_token_date;
 mod grove;
 mod metrics_opt_out;
 mod overage_credit_grant;
-mod prompt_cache_break_detection;
+pub(crate) mod prompt_cache_break_detection;
 mod referral;
 mod session_ingress;
 mod ultrareview_quota;

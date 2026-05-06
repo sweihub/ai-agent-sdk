@@ -51,7 +51,7 @@ pub fn evaluate_time_based_trigger(messages: &[Message]) -> Option<TimeBasedTrig
         return None;
     }
 
-    // Find last assistant message timestamp
+    // Find last assistant message with timestamp (matches TypeScript message.timestamp)
     let last_assistant = messages
         .iter()
         .rev()
@@ -61,11 +61,14 @@ pub fn evaluate_time_based_trigger(messages: &[Message]) -> Option<TimeBasedTrig
         return None;
     };
 
-    // Get timestamp from message - use current time since Message doesn't have timestamp field
-    // The original TypeScript used message.timestamp which is not available in api_types::Message
-    let now_ms = chrono::Utc::now().timestamp_millis() as i64;
-    let last_ts = now_ms;
-    let gap_minutes = ((now_ms - last_ts) as f64 / 60_000.0).abs();
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+
+    // Use message timestamp if available, otherwise fall back to global state
+    let last_ts = last_msg.timestamp.unwrap_or_else(|| {
+        crate::bootstrap::state::get_last_assistant_timestamp().unwrap_or(now_ms)
+    });
+
+    let gap_minutes = ((now_ms as i64 - last_ts as i64) as f64 / 60_000.0).abs();
 
     if !gap_minutes.is_finite() || gap_minutes < config.gap_threshold_minutes as f64 {
         return None;
@@ -363,6 +366,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_reset_microcompact_state() {
         reset_microcompact_state();
         // Should not panic

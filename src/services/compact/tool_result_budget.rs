@@ -370,6 +370,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -385,6 +386,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -400,6 +402,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         }
     }
 

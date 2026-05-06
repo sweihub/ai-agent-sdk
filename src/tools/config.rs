@@ -250,6 +250,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_config_tool_set_and_get() {
         clear_all_test_state();

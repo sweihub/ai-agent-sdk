@@ -1058,14 +1058,19 @@ impl QueryEngine {
     /// Execute auto-compact.
     /// `snip_tokens_freed` is subtracted from the token count for the threshold
     /// check, matching TypeScript's autocompact threshold adjustment.
-    async fn do_auto_compact(&mut self, snip_tokens_freed: u32) -> Result<bool, AgentError> {
+    /// Returns Ok(Some(summary)) if compaction happened with a formatted summary,
+    /// Ok(None) if not needed, Err on failure.
+    async fn do_auto_compact(&mut self, snip_tokens_freed: u32) -> Result<Option<String>, AgentError> {
         use crate::compact::{
-            estimate_token_count, get_auto_compact_threshold, get_compact_prompt,
+            annotate_boundary_with_preserved_segment,
+            build_post_compact_messages, create_compact_boundary_message,
+            estimate_token_count, get_auto_compact_threshold,
+            merge_hook_instructions, re_append_session_metadata,
             strip_images_from_messages, strip_reinjected_attachments,
         };
         use crate::services::compact::{
-            PartialCompactDirection, format_compact_summary,
-            get_compact_prompt as get_compact_prompt_service, get_compact_user_summary_message,
+            format_compact_summary, get_compact_prompt as get_compact_prompt_service,
+            get_compact_user_summary_message,
         };
         use crate::tools::deferred_tools::{
             get_deferred_tool_names, is_tool_search_enabled_optimistic,
@@ -1079,7 +1084,7 @@ impl QueryEngine {
 
         // Check if we need to compact
         if effective_tokens <= threshold {
-            return Ok(false);
+            return Ok(None);
         }
 
         log::info!(
@@ -1092,7 +1097,17 @@ impl QueryEngine {
 
         // Phase 1: Pre-compact hooks
         // Execute pre_compact hooks and merge any custom instructions
-        let _hook_results = self.execute_pre_compact_hooks().await;
+        let hook_custom_instructions = self.execute_pre_compact_hooks().await;
+        // Merge hook instructions into compact prompt (matches TypeScript mergeHookInstructions)
+        let merged_instructions =
+            merge_hook_instructions(None, hook_custom_instructions.as_deref());
+
+        // Emit CompactStart after hooks_start{PreCompact} (matches TypeScript order)
+        if let Some(ref cb) = self.config.on_event {
+            cb(AgentEvent::Compact {
+                event: CompactProgressEvent::CompactStart,
+            });
+        }
 
         // Phase 2: Try session memory compaction first (faster, no API call)
         if let Some(sm_result) = crate::services::compact::try_session_memory_compaction(
@@ -1108,7 +1123,26 @@ impl QueryEngine {
                     sm_result.messages_to_keep,
                     sm_result.post_compact_token_count as u32,
                 );
-                return Ok(true);
+                // Re-append session metadata (matches TypeScript compactConversation)
+                re_append_session_metadata(
+                    self.config.agent_id.as_deref().unwrap_or(""),
+                    &self.config.model,
+                    &self.config.cwd,
+                    None,
+                    None,
+                );
+                // Post-compaction bookkeeping (matches TypeScript compactConversation finally block)
+                crate::bootstrap::state::mark_post_compaction();
+                let _ = crate::services::api::prompt_cache_break_detection::notify_compaction(
+                    "repl_main_thread",
+                    self.config.agent_id.as_deref(),
+                );
+                // Post-compact cleanup (matches TypeScript autoCompactIfNeeded)
+                crate::services::compact::run_post_compact_cleanup(Some("repl_main_thread"));
+                // Post-compact hooks
+                self.execute_post_compact_hooks("Session memory compaction applied").await;
+
+                return Ok(Some("Session memory compaction applied".to_string()));
             }
         }
 
@@ -1116,8 +1150,8 @@ impl QueryEngine {
         let stripped_messages =
             strip_reinjected_attachments(&strip_images_from_messages(&self.messages));
 
-        // Phase 4: Build compact prompt
-        let compact_prompt = get_compact_prompt();
+        // Phase 4: Build compact prompt with merged hook instructions
+        let compact_prompt = get_compact_prompt_service(merged_instructions.as_deref());
 
         // Phase 5: Generate summary using LLM with PTL retry logic
         let (summary, compaction_usage) = match self
@@ -1157,61 +1191,171 @@ impl QueryEngine {
         // Parse and format the summary
         let formatted_summary = format_compact_summary(&summary);
 
-        // Phase 6: Build post-compact messages
+        // Phase 6: Build messages_to_keep (last 4 messages)
         let messages_to_keep: Vec<Message> = if self.messages.len() > 4 {
             self.messages[self.messages.len() - 4..].to_vec()
         } else {
             self.messages.clone()
         };
 
-        // Create boundary marker with summary
+        // Create boundary marker with compact metadata
+        let last_uuid = self
+            .messages
+            .last()
+            .and_then(|m| m.uuid.as_deref());
         let discovered_tools = get_deferred_tool_names(&self.config.tools);
-        let mut boundary_content = format!(
-            "[Previous conversation summarized]\n\n{}",
-            get_compact_user_summary_message(&formatted_summary, Some(true), None, None)
+        let mut boundary_msg = create_compact_boundary_message(
+            "auto",
+            token_count,
+            last_uuid,
+            None,
+            Some(self.messages.len()),
         );
+        // Append summary content to boundary
+        boundary_msg.content.push_str("\n\n");
+        boundary_msg
+            .content
+            .push_str(&get_compact_user_summary_message(
+                &formatted_summary,
+                Some(true),
+                None,
+                None,
+            ));
+        // Attach deferred tools if applicable
         if !discovered_tools.is_empty() && is_tool_search_enabled_optimistic() {
-            boundary_content.push_str("\n\n<available-deferred-tools>\n");
-            boundary_content.push_str(&discovered_tools.join("\n"));
-            boundary_content.push_str("\n</available-deferred-tools>");
+            boundary_msg.content.push_str("\n\n<available-deferred-tools>\n");
+            boundary_msg.content.push_str(&discovered_tools.join("\n"));
+            boundary_msg.content.push_str("\n</available-deferred-tools>");
         }
 
-        let boundary_msg = Message {
-            role: MessageRole::System,
-            content: boundary_content,
-            is_meta: Some(true),
-            ..Default::default()
+        // Annotate boundary with preserved-segment metadata for session storage relinking
+        // For prefix-preserving compact, anchor = boundary itself
+        let anchor_uuid = boundary_msg.uuid.clone().unwrap_or_default();
+        annotate_boundary_with_preserved_segment(
+            &mut boundary_msg,
+            &anchor_uuid,
+            &messages_to_keep,
+        );
+
+        // Phase 6b: Post-compact attachment re-injection (matches TypeScript)
+        let mut attachments: Vec<Message> = Vec::new();
+
+        // Re-inject recently read files
+        let file_attachments = crate::compact::create_post_compact_file_attachments(
+            &crate::bootstrap::state::get_file_read_state(),
+            &messages_to_keep,
+            crate::compact::POST_COMPACT_MAX_FILES_TO_RESTORE as usize,
+        );
+        attachments.extend(file_attachments);
+
+        // Re-inject skill attachments from tracked invocations
+        let invoked_skills = crate::bootstrap::state::get_invoked_skills_for_agent(
+            self.config.agent_id.as_deref(),
+        );
+        let skill_list: Vec<(String, String)> = invoked_skills
+            .into_values()
+            .map(|s| (s.skill_name.clone(), s.content))
+            .collect();
+        let skill_attachments =
+            crate::compact::create_post_compact_skill_attachments(&skill_list);
+        attachments.extend(skill_attachments);
+
+        // Phase 6c: SessionStart hook re-injection (matches TypeScript)
+        // Emit SessionStart hooks event
+        if let Some(ref cb) = self.config.on_event {
+            cb(AgentEvent::Compact {
+                event: CompactProgressEvent::HooksStart {
+                    hook_type: CompactHookType::SessionStart,
+                },
+            });
+        }
+
+        // Process SessionStart hooks after successful compaction
+        let hook_registry_for_session = {
+            let guard = self.hook_registry.lock().unwrap();
+            guard.clone()
+        };
+        let session_hook_results = crate::utils::conversation_recovery::process_session_start_hooks(
+            "compact",
+            None,
+            &self.config.model,
+            hook_registry_for_session.as_ref(),
+        )
+        .await;
+
+        // Phase 7: markPostCompaction + notifyCompaction (matches TypeScript)
+        crate::bootstrap::state::mark_post_compaction();
+        let _ = crate::services::api::prompt_cache_break_detection::notify_compaction(
+            "repl_main_thread",
+            self.config.agent_id.as_deref(),
+        );
+
+        // Re-append session metadata (keeps metadata in 16KB tail window)
+        re_append_session_metadata(
+            self.config.agent_id.as_deref().unwrap_or(""),
+            &self.config.model,
+            &self.config.cwd,
+            None,
+            None,
+        );
+
+        // Build compaction result with all parts
+        let compact_input_tokens = compaction_usage.input_tokens;
+        let compact_output_tokens = compaction_usage.output_tokens;
+        let compaction_result = crate::compact::CompactionResult {
+            boundary_marker: boundary_msg,
+            summary_messages: vec![Message {
+                role: MessageRole::User,
+                content: get_compact_user_summary_message(
+                    &formatted_summary,
+                    Some(true),
+                    None,
+                    None,
+                ),
+                is_meta: Some(true),
+                ..Default::default()
+            }],
+            messages_to_keep: Some(messages_to_keep.clone()),
+            attachments,
+            hook_results: session_hook_results,
+            pre_compact_token_count: token_count,
+            post_compact_token_count: compact_input_tokens as u32,
+            true_post_compact_token_count: None,
+            compaction_usage: Some(compaction_usage),
         };
 
-        // Create new message list: boundary + recent messages
-        let mut new_messages = vec![boundary_msg];
-        new_messages.extend(messages_to_keep.clone());
-
-        let new_token_count = estimate_token_count(&new_messages, self.config.max_tokens);
+        // Build final message list with proper ordering
+        let post_compact_messages = build_post_compact_messages(&compaction_result);
 
         // true_post_compact_token_count: rough estimation from compacted messages
         let true_post_compact_tokens = crate::compact::rough_token_count_estimation_for_content(
-            &new_messages.iter().map(|m| m.content.clone()).collect::<String>(),
+            &post_compact_messages
+                .iter()
+                .map(|m| m.content.clone())
+                .collect::<String>(),
         ) as u64;
+        let compact_usage_ref = compaction_result.compaction_usage.as_ref();
         log::debug!(
             "[compact] true_post_compact_token_count={} compaction_usage.input={} compaction_usage.output={}",
             true_post_compact_tokens,
-            compaction_usage.input_tokens,
-            compaction_usage.output_tokens,
+            compact_usage_ref.map(|u| u.input_tokens).unwrap_or(0),
+            compact_usage_ref.map(|u| u.output_tokens).unwrap_or(0),
         );
 
-        // Phase 7: Post-compact phase
-        // Clear file read state and loaded memory paths
-        // Re-add plan attachment, plan mode attachment, skill attachment if applicable
-        // Execute session_start hooks
-        // Execute post_compact hooks
+        // Phase 8: Post-compact hooks
         self.execute_post_compact_hooks(&formatted_summary).await;
 
-        // Phase 8: Post-compaction cleanup
-        crate::services::compact::run_post_compact_cleanup(None);
+        // Phase 9: Post-compaction cleanup (clears all caches)
+        crate::services::compact::run_post_compact_cleanup(Some("repl_main_thread"));
+        // Clear tracked state after compaction so post-compact attachments are fresh
+        crate::bootstrap::state::clear_file_read_state();
 
         // Apply the new messages
-        self.messages = new_messages;
+        self.messages = post_compact_messages;
+        let new_token_count = crate::compact::estimate_token_count(
+            &self.messages,
+            self.config.max_tokens,
+        );
 
         log::info!(
             "[compact] Complete: {} tokens -> {} tokens",
@@ -1219,12 +1363,26 @@ impl QueryEngine {
             new_token_count
         );
 
-        Ok(true)
+        // Build human-readable summary for CompactEnd event
+        let pct_reduced = if token_count > 0 {
+            ((token_count as i64 - new_token_count as i64) as f64
+                / token_count as f64)
+                * 100.0
+        } else {
+            0.0
+        };
+        Ok(Some(format!(
+            "Conversation compacted: {} → {} tokens ({:.0}% reduced)",
+            token_count,
+            new_token_count,
+            pct_reduced
+        )))
     }
 
     /// Generate summary with PTL (prompt-too-long) retry logic.
     /// If the compact API call fails with prompt-too-long, drops oldest
-    /// message groups until the gap is covered.
+    /// message groups until the token gap is covered.
+    /// Matches TypeScript: compact.ts for(;;) loop with truncateHeadForPTLRetry.
     async fn generate_summary_with_ptl_retry(
         &self,
         messages: &[Message],
@@ -1244,42 +1402,29 @@ impl QueryEngine {
                 max_summary_tokens,
             );
 
-            // Verify it's safe before proceeding
-            if estimated_tokens > 150000 {
-                if attempt < MAX_PTL_RETRIES - 1 {
-                    // PTL retry: drop oldest message groups
-                    log::warn!(
-                        "[compact] PTL retry {}/{}: {} tokens, dropping oldest groups",
-                        attempt + 1,
-                        MAX_PTL_RETRIES,
-                        estimated_tokens
-                    );
-                    summary_messages =
-                        self.truncate_head_for_ptl_retry(&summary_messages, estimated_tokens);
-                    continue;
-                }
-                return Err(AgentError::Api(format!(
-                    "Cannot generate summary: estimated {} tokens exceeds safe limit after {} retries",
-                    estimated_tokens, MAX_PTL_RETRIES
-                )));
-            }
-
             // Attempt summary generation
             match self
                 .generate_summary_from_messages(&truncated_messages)
                 .await
             {
-                Ok((summary, _usage)) => return Ok((summary, _usage)),
+                Ok((summary, usage)) => return Ok((summary, usage)),
                 Err(e) => {
-                    if attempt < MAX_PTL_RETRIES - 1 {
+                    let error_str = format!("{}", e);
+                    // Check if this is specifically a prompt-too-long error
+                    let is_ptl = error_str.to_lowercase().contains("prompt is too long")
+                        || error_str.to_lowercase().contains("prompt too long");
+
+                    if is_ptl && attempt < MAX_PTL_RETRIES - 1 {
+                        // Parse token gap from error for precise truncation
+                        let token_gap = self.extract_ptl_token_gap(&error_str);
                         log::warn!(
-                            "[compact] Summary attempt {}/{} failed: {}, retrying",
+                            "[compact] PTL retry {}/{}: gap={:?} tokens, dropping oldest groups",
                             attempt + 1,
                             MAX_PTL_RETRIES,
-                            e
+                            token_gap
                         );
                         summary_messages =
-                            self.truncate_head_for_ptl_retry(&summary_messages, estimated_tokens);
+                            self.truncate_head_for_ptl_retry(&summary_messages, token_gap);
                     } else {
                         return Err(e);
                     }
@@ -1292,34 +1437,93 @@ impl QueryEngine {
         ))
     }
 
+    /// Extract the token gap (actual - limit) from a PTL error string.
+    /// Returns None if the gap is unparseable (fallback to 20% in truncation).
+    fn extract_ptl_token_gap(&self, error_str: &str) -> Option<u64> {
+        use crate::services::api::errors::{
+            parse_prompt_too_long_token_counts, PROMPT_TOO_LONG_ERROR_MESSAGE,
+        };
+        if !error_str.to_lowercase().contains(&PROMPT_TOO_LONG_ERROR_MESSAGE.to_lowercase()) {
+            return None;
+        }
+        let (actual, limit) = parse_prompt_too_long_token_counts(error_str);
+        let (Some(a), Some(l)) = (actual, limit) else {
+            return None;
+        };
+        let gap = (a as i64).saturating_sub(l as i64);
+        if gap > 0 { Some(gap as u64) } else { None }
+    }
+
     /// Truncate the head of messages for PTL retry.
-    /// Groups messages by API round and drops oldest groups until gap covered.
+    /// Groups messages by API round and drops oldest groups until token gap covered.
     /// If unparseable token gap: drops 20% of groups.
     /// Keeps at least one group to ensure there's something to summarize.
+    /// Prepends PTL_RETRY_MARKER if result starts with assistant (API requires user-first).
+    /// Matches TypeScript: compact.ts truncateHeadForPTLRetry.
     fn truncate_head_for_ptl_retry(
         &self,
         messages: &[Message],
-        estimated_tokens: u32,
+        token_gap: Option<u64>,
     ) -> Vec<Message> {
         use crate::services::compact::grouping::group_messages_by_api_round;
 
-        let groups = group_messages_by_api_round(messages);
-        if groups.is_empty() {
+        // Strip previous PTL_RETRY_MARKER from a prior retry before regrouping
+        let input = if messages.first().is_some_and(|m| {
+            m.is_meta == Some(true) && m.content == crate::compact::PTL_RETRY_MARKER
+        }) {
+            &messages[1..]
+        } else {
+            messages
+        };
+
+        let groups = group_messages_by_api_round(input);
+        if groups.len() < 2 {
             return messages.to_vec();
         }
 
-        // Calculate how many groups to drop (20% fallback)
-        let groups_to_drop = (groups.len() as f64 * 0.2).ceil() as usize;
+        let groups_to_drop = if let Some(gap) = token_gap {
+            // Gap-aware: accumulate group tokens until we cover the reported gap
+            let mut acc: u64 = 0;
+            let mut drop = 0;
+            for g in &groups {
+                acc += crate::services::token_estimation::rough_token_count_estimation_for_messages(g) as u64;
+                drop += 1;
+                if acc >= gap {
+                    break;
+                }
+            }
+            drop
+        } else {
+            // Fallback: drop 20% of groups (ceiling)
+            let drop = ((groups.len() as f64 * 0.2).ceil() as usize).max(1);
+            drop
+        };
+
         let groups_to_drop = groups_to_drop.min(groups.len() - 1); // Keep at least one group
+        if groups_to_drop < 1 {
+            return messages.to_vec();
+        }
 
         log::debug!(
-            "[compact] Dropping {} of {} groups for PTL retry",
+            "[compact] Dropping {} of {} groups for PTL retry (gap={:?})",
             groups_to_drop,
-            groups.len()
+            groups.len(),
+            token_gap
         );
 
-        // Flatten remaining groups
-        groups.into_iter().skip(groups_to_drop).flatten().collect()
+        let mut sliced: Vec<Message> = groups.into_iter().skip(groups_to_drop).flatten().collect();
+
+        // Ensure first message is role=user (API requirement after dropping group 0)
+        if sliced.first().is_some_and(|m| m.role == crate::types::MessageRole::Assistant) {
+            sliced.insert(0, Message {
+                role: crate::types::MessageRole::User,
+                content: crate::compact::PTL_RETRY_MARKER.to_string(),
+                is_meta: Some(true),
+                ..Default::default()
+            });
+        }
+
+        sliced
     }
 
     /// Build messages for summary generation request
@@ -1421,7 +1625,12 @@ impl QueryEngine {
             })?;
 
         if let Some(error) = response_json.get("error") {
-            return Err(AgentError::Api(format!("Summary API error: {}", error)));
+            // Extract raw error message for PTL gap parsing
+            let error_msg = error.get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or(&error.to_string())
+                .to_string();
+            return Err(AgentError::Api(error_msg));
         }
 
         // Extract usage from the compaction API call
@@ -1566,12 +1775,20 @@ impl QueryEngine {
         messages_to_keep: Vec<Message>,
         _post_compact_tokens: u32,
     ) {
-        let boundary_msg = Message {
+        let mut boundary_msg = Message {
             role: MessageRole::System,
             content: "[Previous conversation summarized]".to_string(),
             is_meta: Some(true),
             ..Default::default()
         };
+
+        // Annotate boundary with preserved-segment metadata for session storage relinking
+        let anchor_uuid = boundary_msg.uuid.clone().unwrap_or_default();
+        crate::compact::annotate_boundary_with_preserved_segment(
+            &mut boundary_msg,
+            &anchor_uuid,
+            &messages_to_keep,
+        );
 
         let mut new_messages = vec![boundary_msg];
         new_messages.extend(messages_to_keep);
@@ -1715,15 +1932,10 @@ impl QueryEngine {
                 let threshold = get_auto_compact_threshold(&self.config.model);
 
                 if token_estimate > threshold {
-                    if let Some(ref cb) = self.config.on_event {
-                        cb(AgentEvent::Compact {
-                            event: CompactProgressEvent::CompactStart,
-                        });
-                    }
-                    // Capture pre-compact token count for the summary message
+                    // Capture pre-compact token count for task budget
                     let pre_compact_tokens = token_estimate;
                     match self.do_auto_compact(snip_tokens_freed).await {
-                        Ok(true) => {
+                        Ok(Some(compact_summary)) => {
                             // Compaction succeeded — reset tracking state (matching TypeScript)
                             self.auto_compact_tracking.compacted = true;
                             self.auto_compact_tracking.turn_id = uuid::Uuid::new_v4().to_string();
@@ -1738,27 +1950,7 @@ impl QueryEngine {
                                 self.task_budget_remaining = Some(current.unwrap_or(0).saturating_sub(pre_ctx));
                             }
 
-                            // Fall through to API call with compacted messages
-                            // (TypeScript: messagesForQuery = postCompactMessages, then continues)
-
-                            // Emit "Conversation compacted" summary to TUI/CLI (matching TypeScript)
-                            let post_compact_tokens = compact::estimate_token_count(
-                                &self.messages,
-                                self.config.max_tokens,
-                            );
-                            let pct_reduced = if pre_compact_tokens > 0 {
-                                ((pre_compact_tokens as i64 - post_compact_tokens as i64) as f64
-                                    / pre_compact_tokens as f64)
-                                    * 100.0
-                            } else {
-                                0.0
-                            };
-                            let compact_summary = format!(
-                                "Conversation compacted: {} → {} tokens ({:.0}% reduced)",
-                                format_tokens(pre_compact_tokens as u64),
-                                format_tokens(post_compact_tokens as u64),
-                                pct_reduced
-                            );
+                            // Emit CompactEnd with summary (exactly once, matches TypeScript finally)
                             if let Some(ref cb) = self.config.on_event {
                                 cb(AgentEvent::Compact {
                                     event: CompactProgressEvent::CompactEnd {
@@ -1767,20 +1959,22 @@ impl QueryEngine {
                                 });
                             }
                         }
-                        Ok(false) => {
-                            // No compaction needed or possible
+                        Ok(None) => {
+                            // No compaction needed — no event emitted
                         }
                         Err(e) => {
                             // Compaction failed — propagate failure count so the circuit breaker
                             // can stop retrying on the next iteration (matching TypeScript)
                             self.auto_compact_tracking.consecutive_failures += 1;
                             eprintln!("Auto-compact failed: {}", e);
+                            if let Some(ref cb) = self.config.on_event {
+                                cb(AgentEvent::Compact {
+                                    event: CompactProgressEvent::CompactEnd {
+                                        message: Some(format!("Compaction failed: {}", e)),
+                                    },
+                                });
+                            }
                         }
-                    }
-                    if let Some(ref cb) = self.config.on_event {
-                        cb(AgentEvent::Compact {
-                            event: CompactProgressEvent::CompactEnd { message: None },
-                        });
                     }
                 }
             }
@@ -2108,6 +2302,12 @@ impl QueryEngine {
 
                         if is_prompt_too_long {
                             eprintln!("Prompt too large (413), attempting reactive compact...");
+                            // Emit CompactStart progress event
+                            if let Some(ref cb) = self.config.on_event {
+                                cb(AgentEvent::Compact {
+                                    event: CompactProgressEvent::CompactStart,
+                                });
+                            }
                             let _pre_compact_instructions = self.execute_pre_compact_hooks().await;
                             match crate::services::compact::reactive_compact::run_reactive_compact(
                                 &self.messages,
@@ -2125,8 +2325,35 @@ impl QueryEngine {
                                             .or(self.config.task_budget.as_ref().map(|tb| tb.total));
                                         self.task_budget_remaining = Some(current.unwrap_or(0).saturating_sub(pre_ctx));
                                     }
+                                    let reactive_msg_count = reactive_result.messages.len();
                                     self.messages = reactive_result.messages;
+                                    // Post-compaction bookkeeping (matches TypeScript)
+                                    crate::bootstrap::state::mark_post_compaction();
+                                    let _ = crate::services::api::prompt_cache_break_detection::notify_compaction(
+                                        "repl_main_thread",
+                                        self.config.agent_id.as_deref(),
+                                    );
+                                    crate::services::compact::run_post_compact_cleanup(Some("repl_main_thread"));
+                                    // Re-append session metadata (matches TypeScript)
+                                    crate::compact::re_append_session_metadata(
+                                        self.config.agent_id.as_deref().unwrap_or(""),
+                                        &self.config.model,
+                                        &self.config.cwd,
+                                        None,
+                                        None,
+                                    );
                                     self.execute_post_compact_hooks("Reactive compact applied after 413 error").await;
+                                    // Emit CompactEnd progress event
+                                    if let Some(ref cb) = self.config.on_event {
+                                        cb(AgentEvent::Compact {
+                                            event: CompactProgressEvent::CompactEnd {
+                                                message: Some(format!(
+                                                    "[reactive-compact] reduced to {} messages after 413 error",
+                                                    reactive_msg_count
+                                                )),
+                                            },
+                                        });
+                                    }
                                     self.transition = Some("reactive_compact_retry".to_string());
                                     continue; // Retry with compacted context
                                 }
@@ -2135,6 +2362,12 @@ impl QueryEngine {
                                         "[reactive-compact] no improvement possible, falling through"
                                     );
                                 }
+                            }
+                            // Emit CompactEnd for failure path
+                            if let Some(ref cb) = self.config.on_event {
+                                cb(AgentEvent::Compact {
+                                    event: CompactProgressEvent::CompactEnd { message: None },
+                                });
                             }
                             // Reactive compact didn't help - this is terminal
                             // Add orphaned tool results before terminal error

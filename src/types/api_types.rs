@@ -31,6 +31,10 @@ pub struct Message {
     /// Structured error details for API error messages (raw API error string)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub error_details: Option<String>,
+    /// Unix epoch timestamp (milliseconds) when this message was created.
+    /// Used by microcompact for time-based trigger and session storage.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub timestamp: Option<u64>,
 }
 
 impl Default for Message {
@@ -46,6 +50,7 @@ impl Default for Message {
             is_meta: None,
             is_api_error_message: None,
             error_details: None,
+            timestamp: None,
         }
     }
 }

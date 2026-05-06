@@ -434,6 +434,7 @@ mod tests {
         assert!(r.content.contains("Not a git repository"));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_exit_worktree_clears_state() {
         // Manually set worktree state to simulate being in a worktree

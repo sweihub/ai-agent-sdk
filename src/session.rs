@@ -863,6 +863,7 @@ mod resume_tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn test_deduplicate_messages() {
         let messages = vec![
             Message {
@@ -886,6 +887,7 @@ mod resume_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_deduplicate_preserves_order() {
         let messages = vec![
             Message {
@@ -910,6 +912,7 @@ mod resume_tests {
         assert_eq!(deduped[1].content, "second");
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_resume_session_not_found() {
         let config = ResumeConfig::default();
@@ -1194,6 +1197,7 @@ mod ndjson_tests {
         assert!(path.extension().map(|e| e == "jsonl").unwrap_or(false));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_append_session_entry() {
         crate::tests::common::clear_all_test_state();
@@ -1237,6 +1241,7 @@ mod ndjson_tests {
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_load_session_jsonl() {
         crate::tests::common::clear_all_test_state();
@@ -1271,6 +1276,7 @@ mod ndjson_tests {
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_append_session_message() {
         crate::tests::common::clear_all_test_state();
@@ -1290,6 +1296,7 @@ mod ndjson_tests {
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_load_empty_jsonl() {
         crate::tests::common::clear_all_test_state();
@@ -1298,6 +1305,7 @@ mod ndjson_tests {
         assert!(result.is_none());
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_enqueue_and_drain() {
         crate::tests::common::clear_all_test_state();
@@ -1324,6 +1332,7 @@ mod ndjson_tests {
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_enqueue_session_message() {
         crate::tests::common::clear_all_test_state();
@@ -1352,6 +1361,7 @@ mod ndjson_tests {
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_multiple_sessions_drain() {
         crate::tests::common::clear_all_test_state();
@@ -1390,6 +1400,7 @@ mod ndjson_tests {
         assert!(path.to_string_lossy().contains("agent-123.jsonl"));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_record_sidechain_transcript() {
         crate::tests::common::clear_all_test_state();
@@ -1438,6 +1449,7 @@ mod ndjson_tests {
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_sidechain_parent_uuid_chaining() {
         crate::tests::common::clear_all_test_state();
@@ -1490,6 +1502,7 @@ mod ndjson_tests {
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_insert_message_chain_sidechain() {
         crate::tests::common::clear_all_test_state();
@@ -1517,6 +1530,7 @@ mod ndjson_tests {
         let _ = fs::remove_dir_all(get_session_path(&session_id)).await;
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_insert_message_chain_main() {
         crate::tests::common::clear_all_test_state();

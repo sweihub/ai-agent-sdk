@@ -41,3 +41,10 @@ pub use microcompact::{
     TIME_BASED_MC_CLEARED_MESSAGE, TimeBasedMCResult, collect_compactable_tool_ids,
     maybe_time_based_microcompact, reset_microcompact_state, truncate_tool_result_content,
 };
+
+// Re-export compaction helpers from crate::compact
+pub use crate::compact::{
+    merge_hook_instructions, create_compact_boundary_message, build_post_compact_messages,
+    annotate_boundary_with_preserved_segment, re_append_session_metadata,
+    CompactMetadata, PreservedSegment,
+};

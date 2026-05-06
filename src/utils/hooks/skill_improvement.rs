@@ -166,6 +166,7 @@ Output <updates>[]</updates> if no updates are needed."#,
                 is_api_error_message: None,
                 error_details: None,
                 uuid: None,
+                timestamp: None,
             }]
         }),
         system_prompt: None,

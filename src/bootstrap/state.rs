@@ -879,6 +879,51 @@ pub fn clear_invoked_skills_for_agent(agent_id: &str) {
         .retain(|_, skill| skill.agent_id.as_deref() != Some(agent_id));
 }
 
+/// Global file read tracking for post-compact restore.
+/// Records every successful file read during the conversation so compaction
+/// can re-inject recently read files after summarization.
+use crate::compact::FileReadState;
+
+static FILE_READ_STATE: Lazy<Mutex<FileReadState>> = Lazy::new(|| Mutex::new(FileReadState::new()));
+
+pub fn record_file_read(path: String, content: String) {
+    if let Ok(mut state) = FILE_READ_STATE.lock() {
+        state.record(path, content);
+    }
+}
+
+pub fn get_file_read_state() -> FileReadState {
+    if let Ok(state) = FILE_READ_STATE.lock() {
+        state.clone()
+    } else {
+        FileReadState::new()
+    }
+}
+
+pub fn clear_file_read_state() {
+    if let Ok(mut state) = FILE_READ_STATE.lock() {
+        *state = FileReadState::new();
+    }
+}
+
+/// Tracks when the last assistant message was received.
+/// Used by microcompact's time-based trigger to detect idle gaps.
+static LAST_ASSISTANT_TIMESTAMP: Lazy<Mutex<Option<u64>>> = Lazy::new(|| Mutex::new(None));
+
+pub fn set_last_assistant_timestamp(ts: u64) {
+    if let Ok(mut state) = LAST_ASSISTANT_TIMESTAMP.lock() {
+        *state = Some(ts);
+    }
+}
+
+pub fn get_last_assistant_timestamp() -> Option<u64> {
+    if let Ok(state) = LAST_ASSISTANT_TIMESTAMP.lock() {
+        *state
+    } else {
+        None
+    }
+}
+
 const MAX_SLOW_OPERATIONS: usize = 10;
 const SLOW_OPERATION_TTL_MS: u64 = 10000;
 

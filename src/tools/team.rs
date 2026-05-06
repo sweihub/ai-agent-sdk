@@ -421,6 +421,7 @@ mod tests {
 
     use crate::tests::common::clear_all_test_state;
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_team_create_and_delete() {
         clear_all_test_state();
@@ -450,6 +451,7 @@ mod tests {
         assert!(result.unwrap().content.contains("deleted"));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_send_message() {
         clear_all_test_state();
@@ -467,6 +469,7 @@ mod tests {
         assert!(result.unwrap().content.contains("agent 'agent1'"));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_send_message_broadcast() {
         clear_all_test_state();

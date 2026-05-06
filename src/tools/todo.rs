@@ -216,6 +216,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_todo_write_creates_items() {
         clear_all_test_state();
         let tool = TodoWriteTool::new();
@@ -232,6 +233,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_todo_write_clears_when_all_done() {
         clear_all_test_state();
         let tool = TodoWriteTool::new();
@@ -252,6 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_todo_write_verification_nudge() {
         clear_all_test_state();
         let tool = TodoWriteTool::new();

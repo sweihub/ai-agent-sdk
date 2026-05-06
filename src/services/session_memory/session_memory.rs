@@ -516,6 +516,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -531,6 +532,7 @@ mod tests {
             is_api_error_message: None,
             error_details: None,
             uuid: None,
+            timestamp: None,
         }
     }
 
@@ -586,6 +588,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_should_extract_memory_initial_threshold() {
         super::reset_session_memory_state();
         reset_last_memory_message_uuid();
@@ -629,6 +632,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_reset_last_memory_message_uuid() {
         *LAST_MEMORY_MESSAGE_UUID.lock().unwrap() =
             Some("test-uuid".to_string());

@@ -406,6 +406,7 @@ mod tests {
 
     use crate::tests::common::clear_all_test_state;
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_cron_create_and_list() {
         clear_all_test_state();
@@ -432,6 +433,7 @@ mod tests {
         assert!(result.unwrap().content.contains("Check system status"));
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn test_cron_delete() {
         clear_all_test_state();
