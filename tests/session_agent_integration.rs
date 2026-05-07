@@ -1582,3 +1582,757 @@ fn test_sessions_dir() {
     assert!(dir.to_string_lossy().contains(".open-agent-sdk"));
     assert!(dir.to_string_lossy().contains("sessions"));
 }
+
+// ============================================================================
+// Context compaction integration tests with real LLM API
+// ============================================================================
+// These tests exercise the full auto-compaction pipeline including LLM-based
+// summary generation via do_auto_compact() → generate_summary_from_messages().
+// They require AI_BASE_URL, AI_MODEL, and AI_AUTH_TOKEN environment variables.
+// Skip gracefully if not configured (via has_required_env_vars()).
+
+/// Auto-compaction triggers with a real LLM when context exceeds a very low
+/// threshold. The LLM generates a summary, messages are replaced with the
+/// boundary + recent turns, and the agent responds successfully.
+#[tokio::test]
+#[serial_test::serial]
+
+async fn test_auto_compact_with_real_llm() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping: no API config");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    // Force a tiny auto-compact window so even a few messages trigger compaction
+    let prev = std::env::var("AI_AUTO_COMPACT_WINDOW").ok();
+    unsafe { std::env::set_var("AI_AUTO_COMPACT_WINDOW", "500"); }
+    ai_agent::test_utils::clear_all_test_state();
+
+    let agent = Agent::new("test-model")
+        .model(config.model.clone().unwrap().as_str())
+        .max_turns(5)
+        .system_prompt("You are a concise assistant.");
+
+    // Build up a multi-turn conversation to have meaningful content to compact
+    for i in 1..=4 {
+        let result = agent
+            .query(&format!(
+                "Fact {}: the {} is approximately {} km in diameter. Just say '{}'.",
+                i,
+                match i {
+                    1 => "Earth",
+                    2 => "Moon",
+                    3 => "Mars",
+                    _ => "Sun",
+                },
+                match i {
+                    1 => "12,742",
+                    2 => "3,474",
+                    3 => "6,779",
+                    _ => "1,391",
+                },
+                i
+            ))
+            .await;
+        assert!(result.is_ok(), "turn {} should succeed: {:?}", i, result.err());
+    }
+
+    let messages_before = agent.get_messages().len();
+    eprintln!("After turn 4: {} messages", messages_before);
+
+    // Next query: should trigger auto-compaction then respond with a summary
+    let result_compact = agent
+        .query("List the diameters you remembered. Just numbers, comma-separated.")
+        .await;
+
+    let messages_after = agent.get_messages().len();
+    let final_messages = agent.get_messages();
+    let _resp_text = result_compact.as_ref().map(|r| r.text.clone()).unwrap_or_default();
+
+    // Clean up env var AFTER capturing all results
+    unsafe {
+        match &prev {
+            Some(v) => std::env::set_var("AI_AUTO_COMPACT_WINDOW", v),
+            None => std::env::remove_var("AI_AUTO_COMPACT_WINDOW"),
+        }
+    }
+
+    assert!(
+        result_compact.is_ok(),
+        "query after compaction should succeed: {:?}",
+        result_compact.err()
+    );
+
+    // Verify compaction happened: should have a boundary message
+    let has_boundary = final_messages.iter().any(|m| {
+        m.content.to_lowercase().contains("compacted")
+            || m.content.to_lowercase().contains("summary")
+    });
+
+    eprintln!(
+        "messages_before={} messages_after={} has_boundary={}",
+        messages_before, messages_after, has_boundary
+    );
+
+    assert!(
+        has_boundary,
+        "should have a compact boundary message after auto-compaction. \
+         messages: {:?}",
+        final_messages.iter().map(|m| &m.content[..m.content.len().min(50)]).collect::<Vec<_>>()
+    );
+}
+
+/// Verifies that CompactStart and CompactEnd events are emitted during
+/// auto-compaction with a real LLM API call.
+#[tokio::test]
+#[serial_test::serial]
+
+async fn test_auto_compact_emits_events() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping: no API config");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    let prev = std::env::var("AI_AUTO_COMPACT_WINDOW").ok();
+    unsafe { std::env::set_var("AI_AUTO_COMPACT_WINDOW", "500"); }
+    ai_agent::test_utils::clear_all_test_state();
+
+    let compact_events: std::sync::Arc<Mutex<Vec<ai_agent::types::CompactProgressEvent>>> =
+        std::sync::Arc::new(Mutex::new(Vec::new()));
+    let compact_events_clone = compact_events.clone();
+
+    let agent = Agent::new("test-model")
+        .model(config.model.clone().unwrap().as_str())
+        .max_turns(3)
+        .on_event(move |event| {
+            if let ai_agent::types::AgentEvent::Compact { event: ce } = event {
+                compact_events_clone.lock().unwrap().push(ce);
+            }
+        });
+
+    let result = agent
+        .query(
+            "Note these facts: alpha=1, beta=2, gamma=3. Say 'noted' and nothing else.",
+        )
+        .await;
+
+    unsafe {
+        match &prev {
+            Some(v) => std::env::set_var("AI_AUTO_COMPACT_WINDOW", v),
+            None => std::env::remove_var("AI_AUTO_COMPACT_WINDOW"),
+        }
+    }
+
+    assert!(result.is_ok(), "query should succeed: {:?}", result.err());
+
+    let events = compact_events.lock().unwrap();
+    eprintln!("Compact events: {:?}", events);
+
+    // Should have received CompactStart and CompactEnd events
+    assert!(!events.is_empty(), "should receive compact events");
+
+    let has_start = events
+        .iter()
+        .any(|e| matches!(e, ai_agent::types::CompactProgressEvent::CompactStart));
+    let has_end = events
+        .iter()
+        .any(|e| matches!(e, ai_agent::types::CompactProgressEvent::CompactEnd { .. }));
+
+    assert!(has_start, "should have CompactStart event");
+    assert!(has_end, "should have CompactEnd event");
+}
+
+/// After auto-compaction with a real LLM, the agent should maintain context
+/// about the conversation and answer follow-up questions correctly.
+#[tokio::test]
+#[serial_test::serial]
+
+async fn test_auto_compact_preserves_context() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping: no API config");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    let prev = std::env::var("AI_AUTO_COMPACT_WINDOW").ok();
+    unsafe { std::env::set_var("AI_AUTO_COMPACT_WINDOW", "500"); }
+    ai_agent::test_utils::clear_all_test_state();
+
+    let agent = Agent::new("test-model")
+        .model(config.model.clone().unwrap().as_str())
+        .max_turns(5)
+        .system_prompt("You are a concise assistant. Answer directly.");
+
+    // Turn 1: establish key facts
+    let r1 = agent
+        .query(
+            "I'll give you facts to remember: the color of the sky is blue, \
+             the color of grass is green. Reply 'OK'.",
+        )
+        .await;
+    assert!(r1.is_ok(), "turn 1 should succeed: {:?}", r1.err());
+
+    // Turn 2: triggers auto-compaction + asks a question about remembered facts
+    let r2 = agent
+        .query("What color is the sky? Reply with just the color.")
+        .await;
+
+    unsafe {
+        match &prev {
+            Some(v) => std::env::set_var("AI_AUTO_COMPACT_WINDOW", v),
+            None => std::env::remove_var("AI_AUTO_COMPACT_WINDOW"),
+        }
+    }
+
+    assert!(
+        r2.is_ok(),
+        "turn 2 should succeed after compaction: {:?}",
+        r2.err()
+    );
+    let resp2 = r2.unwrap();
+    eprintln!("After compaction response: {}", resp2.text);
+
+    assert!(
+        resp2.text.to_lowercase().contains("blue"),
+        "agent should remember the sky is blue after compaction: {}",
+        resp2.text
+    );
+}
+
+/// Verifies the full compaction flow with a larger conversation that
+/// naturally builds up, triggers auto-compaction, and continues.
+#[tokio::test]
+#[serial_test::serial]
+
+async fn test_auto_compact_multi_turn_flow() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping: no API config");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    let prev = std::env::var("AI_AUTO_COMPACT_WINDOW").ok();
+    unsafe { std::env::set_var("AI_AUTO_COMPACT_WINDOW", "500"); }
+    ai_agent::test_utils::clear_all_test_state();
+
+    let agent = Agent::new("test-model")
+        .model(config.model.clone().unwrap().as_str())
+        .max_turns(10)
+        .system_prompt("You are a brief assistant.");
+
+    let prompts = vec![
+        "Facts: apple is red, banana is yellow, grape is purple. Say '1'.",
+        "Facts: ocean is salty, desert is dry, mountain is tall. Say '2'.",
+        "What color is a banana? Just the color.",
+        "Is the ocean sweet or salty? Just one word.",
+    ];
+
+    for (i, prompt) in prompts.iter().enumerate() {
+        let result = agent.query(prompt).await;
+        assert!(
+            result.is_ok(),
+            "turn {} should succeed: {:?}",
+            i + 1,
+            result.err()
+        );
+        let resp = result.unwrap();
+        eprintln!("Turn {} response: {}", i + 1, resp.text.chars().take(50).collect::<String>());
+    }
+
+    unsafe {
+        match &prev {
+            Some(v) => std::env::set_var("AI_AUTO_COMPACT_WINDOW", v),
+            None => std::env::remove_var("AI_AUTO_COMPACT_WINDOW"),
+        }
+    }
+
+    // Verify messages went through compaction
+    let messages = agent.get_messages();
+    let has_boundary = messages.iter().any(|m| {
+        m.content.to_lowercase().contains("compacted")
+            || m.content.to_lowercase().contains("summary")
+    });
+    assert!(
+        has_boundary,
+        "should have compacted through multi-turn conversation"
+    );
+}
+
+// ============================================================================
+// Microcompact integration tests
+// ============================================================================
+
+/// truncate_tool_result_content caps oversized content at 16,000 chars for generic tools.
+#[test]
+fn test_microcompact_truncates_oversized_tool_results() {
+    let large_content = "x".repeat(20_000);
+    let truncated = ai_agent::services::compact::truncate_tool_result_content(
+        &large_content,
+        "Read",
+    );
+
+    assert!(
+        truncated.len() < large_content.len(),
+        "should truncate: {} -> {}",
+        large_content.len(),
+        truncated.len()
+    );
+    assert!(
+        truncated.contains("truncated"),
+        "should have truncation marker"
+    );
+    // Content is capped at 16,000 chars + truncation suffix
+    assert!(
+        truncated.len() <= 16_000 + 60,
+        "should be near 16,000 cap, got {}",
+        truncated.len()
+    );
+}
+
+/// truncate_tool_result_content does not touch small content.
+#[test]
+fn test_microcompact_preserves_small_tool_results() {
+    let content = "small result";
+    let result = ai_agent::services::compact::truncate_tool_result_content(
+        &content,
+        "Read",
+    );
+    assert_eq!(result, content);
+}
+
+/// truncate_tool_result_content caps Glob results at 100 lines.
+#[test]
+fn test_microcompact_glob_line_cap() {
+    let lines: Vec<String> = (0..150).map(|i| format!("/path/to/file_{}.rs", i)).collect();
+    let glob_content = lines.join("\n");
+    let truncated = ai_agent::services::compact::truncate_tool_result_content(
+        &glob_content,
+        "Glob",
+    );
+
+    let result_lines = truncated.lines().count();
+    // 100 results + truncation message lines
+    assert!(
+        result_lines < 150,
+        "should reduce from 150 lines to fewer, got {}",
+        result_lines
+    );
+    assert!(
+        truncated.contains("more files not shown"),
+        "should have glob truncation message"
+    );
+}
+
+/// truncate_tool_result_content passes through small glob results.
+#[test]
+fn test_microcompact_glob_passthrough_small() {
+    let lines: Vec<String> = (0..50).map(|i| format!("/path/file_{}.rs", i)).collect();
+    let glob_content = lines.join("\n");
+    let result = ai_agent::services::compact::truncate_tool_result_content(
+        &glob_content,
+        "Glob",
+    );
+    assert_eq!(result, glob_content);
+}
+
+/// microcompact_messages truncates oversized tool results in place.
+#[test]
+fn test_microcompact_messages_reduces_large_tool_results() {
+    ai_agent::services::compact::reset_microcompact_state();
+    let large = "result-line\n".repeat(10_000); // ~120KB
+
+    let mut messages = vec![
+        Message {
+            role: MessageRole::User,
+            content: "Run a search.".to_string(),
+            ..Default::default()
+        },
+        Message {
+            role: MessageRole::Assistant,
+            content: "Running search...".to_string(),
+            ..Default::default()
+        },
+        Message {
+            role: MessageRole::Tool,
+            content: large.clone(),
+            tool_call_id: Some("tool_1".to_string()),
+            ..Default::default()
+        },
+    ];
+
+    let total_chars_before: usize = messages.iter().map(|m| m.content.len()).sum();
+    ai_agent::services::compact::microcompact::microcompact_messages(&mut messages);
+    let total_chars_after: usize = messages.iter().map(|m| m.content.len()).sum();
+
+    eprintln!(
+        "microcompact: {} chars -> {} chars",
+        total_chars_before, total_chars_after
+    );
+
+    assert!(
+        total_chars_after < total_chars_before,
+        "microcompact should reduce oversized tool results"
+    );
+    // The tool result should be under 16,000 + truncation suffix
+    assert!(
+        messages[2].content.len() <= 16_100,
+        "tool result should be capped near 16,000, got {}",
+        messages[2].content.len()
+    );
+}
+
+/// needs_microcompact detects when tool results exceed threshold.
+#[test]
+fn test_needs_microcompact_threshold() {
+    let small_tool = Message {
+        role: MessageRole::Tool,
+        content: "small".to_string(),
+        ..Default::default()
+    };
+    let large_tool = Message {
+        role: MessageRole::Tool,
+        content: "x".repeat(50_000),
+        ..Default::default()
+    };
+
+    assert!(
+        !ai_agent::services::compact::microcompact::needs_microcompact(
+            &[small_tool.clone()],
+            10_000
+        ),
+        "small tool result should not need microcompact"
+    );
+    assert!(
+        ai_agent::services::compact::microcompact::needs_microcompact(
+            &[large_tool.clone()],
+            10_000
+        ),
+        "large tool result should need microcompact"
+    );
+    assert!(
+        ai_agent::services::compact::microcompact::needs_microcompact(
+            &[small_tool, large_tool],
+            10_000
+        ),
+        "combined tool results should need microcompact"
+    );
+}
+
+/// collect_compactable_tool_ids finds compactable tool calls from assistant messages.
+#[test]
+fn test_collect_compactable_tool_ids() {
+    use ai_agent::types::ToolCall;
+
+    let messages = vec![
+        Message {
+            role: MessageRole::User,
+            content: "Read a file".to_string(),
+            ..Default::default()
+        },
+        Message {
+            role: MessageRole::Assistant,
+            content: "Reading...".to_string(),
+            tool_calls: Some(vec![
+                ToolCall {
+                    id: "call_read_1".to_string(),
+                    r#type: "function".to_string(),
+                    name: "Read".to_string(),
+                    arguments: serde_json::json!({ "path": "/foo" }),
+                },
+                ToolCall {
+                    id: "call_custom_1".to_string(),
+                    r#type: "function".to_string(),
+                    name: "CustomTool".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+            ]),
+            ..Default::default()
+        },
+        Message {
+            role: MessageRole::Tool,
+            content: "file content".to_string(),
+            tool_call_id: Some("call_read_1".to_string()),
+            ..Default::default()
+        },
+        Message {
+            role: MessageRole::Assistant,
+            content: "Bashing...".to_string(),
+            tool_calls: Some(vec![ToolCall {
+                id: "call_bash_1".to_string(),
+                r#type: "function".to_string(),
+                name: "Bash".to_string(),
+                arguments: serde_json::json!({ "command": "ls" }),
+            }]),
+            ..Default::default()
+        },
+    ];
+
+    let ids = ai_agent::services::compact::collect_compactable_tool_ids(&messages);
+    assert_eq!(
+        ids.len(),
+        2,
+        "should find Read and Bash, not CustomTool, got: {:?}",
+        ids
+    );
+    assert_eq!(ids[0], "call_read_1");
+    assert_eq!(ids[1], "call_bash_1");
+}
+
+/// TIME_BASED_MC_CLEARED_MESSAGE constant is as expected.
+#[test]
+fn test_time_based_mc_cleared_message() {
+    assert_eq!(
+        ai_agent::services::compact::TIME_BASED_MC_CLEARED_MESSAGE,
+        "[Old tool result content cleared]"
+    );
+}
+
+/// Reset microcompact state clears all cached state.
+#[test]
+fn test_reset_microcompact_state() {
+    ai_agent::test_utils::clear_all_test_state();
+    // Should not panic
+    ai_agent::services::compact::reset_microcompact_state();
+}
+
+/// Microcompact runs as part of agent query flow with real LLM.
+/// The agent processes tool results, and oversized ones get truncated.
+#[tokio::test]
+#[serial_test::serial]
+
+async fn test_microcompact_in_agent_flow() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping: no API config");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    ai_agent::test_utils::clear_all_test_state();
+
+    let agent = Agent::new("test-model")
+        .model(config.model.clone().unwrap().as_str())
+        .max_turns(2)
+        .system_prompt("You are a concise assistant. Answer briefly.");
+
+    // Generate a long response that could trigger microcompact behavior
+    let result = agent
+        .query(
+            "List 20 fruits with descriptions (2 sentences each). \
+             Keep it structured.",
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "query should succeed: {:?}",
+        result.err()
+    );
+    let resp = result.unwrap();
+    assert!(!resp.text.is_empty(), "should have a response");
+
+    let messages = agent.get_messages();
+    eprintln!(
+        "Agent messages after query: {}, total chars: {}",
+        messages.len(),
+        messages.iter().map(|m| m.content.len()).sum::<usize>()
+    );
+
+    // Verify no single message is absurdly oversized
+    for (i, msg) in messages.iter().enumerate() {
+        if msg.content.len() > 500_000 {
+            panic!(
+                "Message {} is too large ({} chars) — microcompact should have handled this",
+                i,
+                msg.content.len()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// Session memory compaction integration tests (ENABLE_CLAUDE_CODE_SM_COMPACT=1)
+// ============================================================================
+
+/// Session memory compaction is enabled by default (should_use = true).
+#[test]
+fn test_session_memory_compact_enabled_by_default() {
+    // Without any env var override, should default to true
+    let prev = std::env::var("ENABLE_CLAUDE_CODE_SM_COMPACT").ok();
+    let prev_disable = std::env::var("DISABLE_CLAUDE_CODE_SM_COMPACT").ok();
+    unsafe {
+        std::env::remove_var("ENABLE_CLAUDE_CODE_SM_COMPACT");
+        std::env::remove_var("DISABLE_CLAUDE_CODE_SM_COMPACT");
+    }
+
+    assert!(
+        ai_agent::services::compact::should_use_session_memory_compaction(),
+        "session memory compaction should be enabled by default"
+    );
+
+    // Restore
+    unsafe {
+        if let Some(v) = prev {
+            std::env::set_var("ENABLE_CLAUDE_CODE_SM_COMPACT", v);
+        }
+        if let Some(v) = prev_disable {
+            std::env::set_var("DISABLE_CLAUDE_CODE_SM_COMPACT", v);
+        }
+    }
+}
+
+/// ENABLE_CLAUDE_CODE_SM_COMPACT=1 explicitly enables session memory compaction.
+#[test]
+fn test_session_memory_compact_env_enable() {
+    let prev = std::env::var("ENABLE_CLAUDE_CODE_SM_COMPACT").ok();
+    unsafe { std::env::set_var("ENABLE_CLAUDE_CODE_SM_COMPACT", "1"); }
+
+    assert!(
+        ai_agent::services::compact::should_use_session_memory_compaction(),
+        "ENABLE_CLAUDE_CODE_SM_COMPACT=1 should enable"
+    );
+
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("ENABLE_CLAUDE_CODE_SM_COMPACT", v),
+            None => std::env::remove_var("ENABLE_CLAUDE_CODE_SM_COMPACT"),
+        }
+    }
+}
+
+/// DISABLE_CLAUDE_CODE_SM_COMPACT=1 overrides and disables.
+#[test]
+fn test_session_memory_compact_env_disable() {
+    let prev = std::env::var("DISABLE_CLAUDE_CODE_SM_COMPACT").ok();
+    unsafe { std::env::set_var("DISABLE_CLAUDE_CODE_SM_COMPACT", "1"); }
+
+    assert!(
+        !ai_agent::services::compact::should_use_session_memory_compaction(),
+        "DISABLE_CLAUDE_CODE_SM_COMPACT=1 should disable"
+    );
+
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("DISABLE_CLAUDE_CODE_SM_COMPACT", v),
+            None => std::env::remove_var("DISABLE_CLAUDE_CODE_SM_COMPACT"),
+        }
+    }
+}
+
+/// try_session_memory_compaction returns None when no session memory content exists
+/// (fast path — no API call needed).
+#[tokio::test]
+async fn test_session_memory_compact_no_content() {
+    let _prev = std::env::var("ENABLE_CLAUDE_CODE_SM_COMPACT").ok();
+    unsafe { std::env::set_var("ENABLE_CLAUDE_CODE_SM_COMPACT", "1"); }
+    ai_agent::test_utils::clear_all_test_state();
+
+    let messages = vec![
+        Message {
+            role: MessageRole::User,
+            content: "Hello".to_string(),
+            ..Default::default()
+        },
+    ];
+
+    let result = ai_agent::services::compact::try_session_memory_compaction(
+        &messages,
+        None,
+        Some(100_000),
+    )
+    .await;
+
+    // With no session memory file, should return None (no compaction)
+    // or Some with compacted=false
+    match &result {
+        None => eprintln!("No session memory content — returned None (expected)"),
+        Some(r) => {
+            assert!(
+                !r.compacted,
+                "should not compact when no session memory content exists"
+            );
+        }
+    }
+
+    unsafe {
+        match _prev {
+            Some(v) => std::env::set_var("ENABLE_CLAUDE_CODE_SM_COMPACT", v),
+            None => std::env::remove_var("ENABLE_CLAUDE_CODE_SM_COMPACT"),
+        }
+    }
+}
+
+/// Full compaction flow with session memory compaction enabled via env var.
+/// Uses real LLM API to verify the session memory path integrates correctly.
+#[tokio::test]
+#[serial_test::serial]
+
+async fn test_auto_compact_with_session_memory_enabled() {
+    if !has_required_env_vars() {
+        eprintln!("Skipping: no API config");
+        return;
+    }
+
+    let config = EnvConfig::load();
+    let prev_sm = std::env::var("ENABLE_CLAUDE_CODE_SM_COMPACT").ok();
+    let prev_window = std::env::var("AI_AUTO_COMPACT_WINDOW").ok();
+    unsafe {
+        std::env::set_var("ENABLE_CLAUDE_CODE_SM_COMPACT", "1");
+        std::env::set_var("AI_AUTO_COMPACT_WINDOW", "500");
+    }
+    ai_agent::test_utils::clear_all_test_state();
+
+    let agent = Agent::new("test-model")
+        .model(config.model.clone().unwrap().as_str())
+        .max_turns(5)
+        .system_prompt("You are a concise assistant.");
+
+    // Build conversation to trigger compaction
+    for i in 1..=3 {
+        let result = agent
+            .query(&format!(
+                "Remember: item {} is {}. Say 'OK'.",
+                i,
+                match i {
+                    1 => "important",
+                    2 => "critical",
+                    _ => "essential",
+                }
+            ))
+            .await;
+        assert!(result.is_ok(), "turn {} should succeed", i);
+    }
+
+    // Capture state before cleanup
+    let messages = agent.get_messages();
+    let has_boundary = messages.iter().any(|m| {
+        m.content.to_lowercase().contains("compacted")
+            || m.content.to_lowercase().contains("summary")
+            || m.content.to_lowercase().contains("session memory")
+    });
+
+    // Clean up
+    unsafe {
+        match prev_sm {
+            Some(v) => std::env::set_var("ENABLE_CLAUDE_CODE_SM_COMPACT", v),
+            None => std::env::remove_var("ENABLE_CLAUDE_CODE_SM_COMPACT"),
+        }
+        match prev_window {
+            Some(v) => std::env::set_var("AI_AUTO_COMPACT_WINDOW", v),
+            None => std::env::remove_var("AI_AUTO_COMPACT_WINDOW"),
+        }
+    }
+
+    eprintln!(
+        "session_memory_compact test: {} messages, has_boundary={}",
+        messages.len(),
+        has_boundary
+    );
+
+    assert!(
+        has_boundary,
+        "should have compacted with session memory enabled"
+    );
+}
+

@@ -59,8 +59,8 @@ pub fn should_use_session_memory_compaction() -> bool {
         return false;
     }
 
-    // For now, default to false (feature-gated in TypeScript)
-    false
+    // Default: enabled (no gate)
+    true
 }
 
 /// Check if a message contains text blocks

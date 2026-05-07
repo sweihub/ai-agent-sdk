@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ai-agent"
-version = "0.94.4"
+version = "0.96.1"
 dependencies = [
  "anyhow",
  "async-trait",

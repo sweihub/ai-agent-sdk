@@ -641,7 +641,10 @@ pub async fn execute_extract_memories(
 ) {
     let state = {
         let guard = EXTRACTOR_STATE.lock().unwrap();
-        guard.as_ref().unwrap().clone_state()
+        match guard.as_ref() {
+            Some(state) => state.clone_state(),
+            None => return,
+        }
     };
 
     // Only run for the main agent, not subagents.
